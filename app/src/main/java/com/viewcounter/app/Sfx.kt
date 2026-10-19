@@ -27,6 +27,7 @@ object Sfx {
         ids[R.raw.tap] = sp.load(app, R.raw.tap, 1)
         ids[R.raw.pop] = sp.load(app, R.raw.pop, 1)
         ids[R.raw.chime] = sp.load(app, R.raw.chime, 1)
+        ids[R.raw.alert] = sp.load(app, R.raw.alert, 1)
         pool = sp
         return sp
     }

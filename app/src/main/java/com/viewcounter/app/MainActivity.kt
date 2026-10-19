@@ -73,6 +73,7 @@ class MainActivity : Activity() {
     private val rows = HashMap<String, Row>()
     private val customRows = HashMap<String, CustomRow>()
     private val platTotals = HashMap<String, TextView>()
+    private val tileNums = HashMap<String, TextView>()
     private var heroNumber: TextView? = null
     private var heroSub: TextView? = null
     private var heroMascot: ImageView? = null
@@ -306,6 +307,7 @@ class MainActivity : Activity() {
                 .scaleY(if (on) 1f else 0.6f).setStartDelay(0).setDuration(240)
                 .setInterpolator(OvershootInterpolator(1.4f)).start()
             navIcons[i].setIconColor(if (on) 0xFF14121F.toInt() else Color.WHITE)
+            navIcons[i].setFilled(on)
         }
     }
 
@@ -534,6 +536,7 @@ class MainActivity : Activity() {
         rows.clear()
         customRows.clear()
         platTotals.clear()
+        tileNums.clear()
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -603,7 +606,28 @@ class MainActivity : Activity() {
             addUpdateListener { m.translationY = -dpf(8) * (it.animatedValue as Float) }
             start()
         }
-        add(col, hero, lp(bottom = dp(16)))
+        add(col, hero, lp(bottom = dp(12)))
+
+        // quick totals
+        val tilesRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val tileDefs = listOf(
+            Triple("reels", "Reels", Pastel.PEACH), Triple("posts", "Posts", Pastel.SKY),
+            Triple("stories", "Stories", Pastel.GREEN), Triple("messages", "Chats", Pastel.YELLOW)
+        )
+        tileDefs.forEachIndexed { i, def ->
+            val t = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(14), dp(14), dp(14), dp(14))
+                background = rounded(pal.pastel(def.third), 22)
+            }
+            t.addView(IconView(this, def.first, pal.ink), LinearLayout.LayoutParams(dp(22), dp(22)))
+            val num = tv("0", 22f, pal.ink, 2)
+            tileNums[def.first] = num
+            t.addView(num, lp(top = dp(8)))
+            t.addView(tv(def.second, 12f, pal.sub, 1))
+            tilesRow.addView(t, LinearLayout.LayoutParams(0, WRAP, 1f).apply { if (i > 0) marginStart = dp(8) })
+        }
+        add(col, tilesRow, lp(bottom = dp(16)))
 
         // week
         val wk = LinearLayout(this).apply {
@@ -625,11 +649,7 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
             }
-            val badge = tv(p.badge, 13f, Color.WHITE, 2).apply {
-                gravity = Gravity.CENTER
-                background = circle(p.color)
-            }
-            head.addView(badge, LinearLayout.LayoutParams(dp(44), dp(44)))
+            head.addView(BrandView(this, p.key), LinearLayout.LayoutParams(dp(44), dp(44)))
             head.addView(tv(p.name, 17f, pal.ink, 1), LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) })
             val pt = tv("0", 22f, pal.ink, 2)
             platTotals[p.key] = pt
@@ -734,6 +754,11 @@ class MainActivity : Activity() {
             }
             platTotals[p.key]?.text = pt.toString()
             total += pt
+        }
+        for ((type, numView) in tileNums) {
+            var s = 0
+            for (p in plats) if (p.types.contains(type)) s += Store.today(this, p.key, type)
+            numView.text = s.toString()
         }
         for ((key, cr) in customRows) {
             val n = Store.today(this, key, "scrolls")
@@ -933,6 +958,7 @@ class MainActivity : Activity() {
                     val at = list.indexOfFirst { it.id == rule.id }
                     if (at >= 0) list[at] = rule else list.add(rule)
                     Store.saveRules(this, list)
+                    if (Store.sumToday(this, platform, type) >= n) Store.markFired(this, rule.id)
                     close()
                     showTab(1, false)
                     Sfx.play(this, R.raw.chime, 0.7f)
@@ -964,7 +990,7 @@ class MainActivity : Activity() {
         d.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         d.show()
         popIn(card)
-        Sfx.play(this, R.raw.pop)
+        Sfx.play(this, R.raw.alert)
     }
 
     // ---------- APPS ----------
@@ -976,11 +1002,7 @@ class MainActivity : Activity() {
         bi.addView(tv("Always tracked", 17f, pal.ink, 1))
         val brow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         for (p in plats) {
-            val b = tv(p.badge, 13f, Color.WHITE, 2).apply {
-                gravity = Gravity.CENTER
-                background = circle(p.color)
-            }
-            brow.addView(b, LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(10) })
+            brow.addView(BrandView(this, p.key), LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(10) })
         }
         bi.addView(brow, lp(top = dp(12), bottom = dp(12)))
         bi.addView(tv("Stories, posts, reels and messages are counted separately for each one.", 14f, pal.sub))
@@ -1230,11 +1252,20 @@ class MainActivity : Activity() {
         prefs.addView(toggleRow("Notifications", "Your messages as notifications", "notify"))
         add(col, prefs, lp(bottom = dp(12)))
 
+        val test = secondaryButton("Send a test message")
+        test.pressable {
+            val title = "150 Reels · Test"
+            val msg = Store.rules(this).firstOrNull()?.message ?: "Hey! This is how your messages will look."
+            Notifier.post(this, 99, title, msg, 6)
+            showPreview(title, msg, 6)
+        }
+        add(col, test, lp(bottom = dp(12)))
+
         // privacy
         val priv = card(pal.pastel(Pastel.GREEN))
         priv.addView(tv("Private by design", 17f, pal.ink, 1))
         priv.addView(
-            tv("It never reads or stores any text, names or messages. Everything stays on this phone, and the app has no internet access at all.", 14f, pal.sub),
+            tv("It only looks at screen structure and button labels to tell Reels from Posts. Nothing is saved or sent anywhere, and the app has no internet access at all.", 14f, pal.sub),
             lp(top = dp(4))
         )
         add(col, priv, lp(bottom = dp(12)))
@@ -1259,7 +1290,7 @@ class MainActivity : Activity() {
         }
         add(col, reset, lp(top = dp(8)))
 
-        val about = tv("View Counter 2.0.0", 13f, pal.sub).apply { gravity = Gravity.CENTER }
+        val about = tv("View Counter 2.1.0", 13f, pal.sub).apply { gravity = Gravity.CENTER }
         val diag = tv("", 11f, pal.sub).apply {
             gravity = Gravity.CENTER
             visibility = View.GONE

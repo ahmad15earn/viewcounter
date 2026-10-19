@@ -11,14 +11,18 @@ import android.media.AudioAttributes
 import android.net.Uri
 
 object Notifier {
-    private const val CHANNEL = "alerts_v1"
+    private const val CHANNEL = "alerts_v2"
 
     fun ensureChannel(c: Context) {
         val nm = c.getSystemService(NotificationManager::class.java) ?: return
+        try {
+            nm.deleteNotificationChannel("alerts_v1")
+        } catch (_: Exception) {
+        }
         if (nm.getNotificationChannel(CHANNEL) != null) return
         val ch = NotificationChannel(CHANNEL, "Scroll messages", NotificationManager.IMPORTANCE_HIGH)
         ch.description = "Your custom messages when you hit a scroll number"
-        val uri = Uri.parse("android.resource://${c.packageName}/${R.raw.chime}")
+        val uri = Uri.parse("android.resource://${c.packageName}/${R.raw.alert}")
         ch.setSound(
             uri,
             AudioAttributes.Builder()

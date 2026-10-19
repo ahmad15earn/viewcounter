@@ -8,6 +8,8 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Shader
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
@@ -279,8 +281,15 @@ class IconView(context: Context, private val kind: String, private var color: In
     private val rect = RectF()
     private val path = Path()
 
+    private var filled = false
+
     fun setIconColor(c: Int) {
         color = c
+        invalidate()
+    }
+
+    fun setFilled(f: Boolean) {
+        filled = f
         invalidate()
     }
 
@@ -314,15 +323,29 @@ class IconView(context: Context, private val kind: String, private var color: In
                 c.drawPath(path, p)
             }
             "messages", "chat" -> {
+                if (filled) p.style = Paint.Style.FILL
                 rect.set(3 * u, 4 * u, 21 * u, 16 * u)
                 c.drawRoundRect(rect, 5 * u, 5 * u, p)
                 path.reset()
                 path.moveTo(8 * u, 16 * u)
                 path.lineTo(8 * u, 20.5f * u)
                 path.lineTo(13 * u, 16 * u)
+                if (filled) path.close()
                 c.drawPath(path, p)
             }
-            "home" -> {
+            "home" -> if (filled) {
+                p.style = Paint.Style.FILL
+                path.reset()
+                path.moveTo(12 * u, 3.5f * u)
+                path.lineTo(21 * u, 11 * u)
+                path.lineTo(18.5f * u, 11 * u)
+                path.lineTo(18.5f * u, 20.5f * u)
+                path.lineTo(5.5f * u, 20.5f * u)
+                path.lineTo(5.5f * u, 11 * u)
+                path.lineTo(3 * u, 11 * u)
+                path.close()
+                c.drawPath(path, p)
+            } else {
                 path.reset()
                 path.moveTo(3.5f * u, 11 * u)
                 path.lineTo(12 * u, 4 * u)
@@ -341,6 +364,7 @@ class IconView(context: Context, private val kind: String, private var color: In
                 c.drawLine(5 * u, 12 * u, 19 * u, 12 * u, p)
             }
             "grid" -> {
+                if (filled) p.style = Paint.Style.FILL
                 rect.set(4 * u, 4 * u, 10 * u, 10 * u)
                 c.drawRoundRect(rect, 2 * u, 2 * u, p)
                 rect.set(14 * u, 4 * u, 20 * u, 10 * u)
@@ -351,8 +375,14 @@ class IconView(context: Context, private val kind: String, private var color: In
                 c.drawRoundRect(rect, 2 * u, 2 * u, p)
             }
             "gear" -> {
-                c.drawCircle(12 * u, 12 * u, 3.2f * u, p)
-                c.drawCircle(12 * u, 12 * u, 7f * u, p)
+                if (filled) {
+                    p.style = Paint.Style.FILL
+                    c.drawCircle(12 * u, 12 * u, 7.4f * u, p)
+                    p.style = Paint.Style.STROKE
+                } else {
+                    c.drawCircle(12 * u, 12 * u, 3.2f * u, p)
+                    c.drawCircle(12 * u, 12 * u, 7f * u, p)
+                }
                 for (i in 0 until 8) {
                     val a = i * PI / 4
                     val x1 = (12 + 8.6 * cos(a)).toFloat() * u
@@ -625,5 +655,79 @@ class SplashView(context: Context, private val bg: Int, private val ink: Int, pr
         paint.color = sub
         paint.alpha = 255
         canvas.drawText(msg, cx, by + barH + 28 * s, paint)
+    }
+}
+
+
+/** Little brand-style badges for each platform, drawn with paths. */
+class BrandView(context: Context, private val key: String) : View(context) {
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val rect = RectF()
+    private val path = Path()
+
+    override fun onDraw(c: Canvas) {
+        val w = width.toFloat()
+        val u = w / 24f
+        p.shader = null
+        p.style = Paint.Style.FILL
+        when (key) {
+            "instagram" -> {
+                p.shader = LinearGradient(
+                    0f, w, w, 0f,
+                    intArrayOf(0xFFFEDA77.toInt(), 0xFFF58529.toInt(), 0xFFDD2A7B.toInt(), 0xFF8134AF.toInt()),
+                    null, Shader.TileMode.CLAMP
+                )
+                rect.set(0f, 0f, w, w)
+                c.drawRoundRect(rect, 7 * u, 7 * u, p)
+                p.shader = null
+                p.color = Color.WHITE
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = 1.8f * u
+                rect.set(5.5f * u, 5.5f * u, 18.5f * u, 18.5f * u)
+                c.drawRoundRect(rect, 4.5f * u, 4.5f * u, p)
+                c.drawCircle(12 * u, 12 * u, 3.4f * u, p)
+                p.style = Paint.Style.FILL
+                c.drawCircle(16.2f * u, 7.8f * u, 1.1f * u, p)
+            }
+            "facebook" -> {
+                p.color = 0xFF1877F2.toInt()
+                c.drawCircle(w / 2, w / 2, w / 2, p)
+                p.color = Color.WHITE
+                p.typeface = Typeface.create("sans-serif", Typeface.BOLD)
+                p.textSize = 19 * u
+                p.textAlign = Paint.Align.CENTER
+                c.drawText("f", w / 2 + 1.2f * u, w / 2 + 6.4f * u, p)
+            }
+            "twitter" -> {
+                p.color = 0xFF14121F.toInt()
+                c.drawCircle(w / 2, w / 2, w / 2, p)
+                p.color = Color.WHITE
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = 2.2f * u
+                c.drawLine(8 * u, 8 * u, 16 * u, 16 * u, p)
+                c.drawLine(16 * u, 8 * u, 8 * u, 16 * u, p)
+            }
+            else -> {
+                p.color = 0xFF25D366.toInt()
+                c.drawCircle(w / 2, w / 2, w / 2, p)
+                p.color = Color.WHITE
+                p.style = Paint.Style.STROKE
+                p.strokeWidth = 1.8f * u
+                c.drawCircle(12 * u, 11.6f * u, 6.2f * u, p)
+                path.reset()
+                path.moveTo(7.4f * u, 15.6f * u)
+                path.lineTo(6.2f * u, 18.8f * u)
+                path.lineTo(9.6f * u, 17.6f * u)
+                c.drawPath(path, p)
+                path.reset()
+                path.moveTo(9.7f * u, 9.2f * u)
+                path.quadTo(9.5f * u, 11.8f * u, 12.3f * u, 14.2f * u)
+                path.quadTo(14.4f * u, 14.8f * u, 14.8f * u, 13.6f * u)
+                c.drawPath(path, p)
+            }
+        }
     }
 }
