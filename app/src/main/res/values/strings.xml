@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">View Counter</string>
     <string name="service_desc">Counts how many stories, posts, reels and messages scroll past in the apps you choose, and shows your own messages when you hit your numbers. It looks only at screen structure and button labels to tell reels from posts, saves no text, and this app has no internet access.</string>
+    <string name="widget_desc">Your scroll count and a nudge, right on the home screen.</string>
 </resources>

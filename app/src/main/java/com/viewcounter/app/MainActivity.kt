@@ -3,8 +3,10 @@ package com.viewcounter.app
 import android.Manifest
 import android.animation.ValueAnimator
 import android.app.Activity
+import android.appwidget.AppWidgetManager
 import android.app.AlertDialog
 import android.app.Dialog
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -253,6 +255,7 @@ class MainActivity : Activity() {
         super.onPause()
         h.removeCallbacks(tick)
         mascotAnim?.cancel()
+        WidgetProvider.refresh(this)
     }
 
     @Deprecated("Deprecated in Java")
@@ -282,19 +285,18 @@ class MainActivity : Activity() {
                 }
                 slot.addView(bgc, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER))
                 val ic = IconView(this, kind, Color.WHITE)
-                slot.addView(ic, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
+                slot.addView(ic, FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER))
                 navBgs.add(bgc)
                 navIcons.add(ic)
-                slot.pressable { selectTab(idx) }
+                slot.pressable(0) { selectTab(idx) }
             } else {
                 val fab = FrameLayout(this).apply {
                     background = circle(pal.accent)
-                    elevation = dpf(8)
-                    translationY = -dpf(14)
+                    elevation = dpf(4)
                 }
                 fab.addView(IconView(this, "plus", Color.WHITE), FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER))
-                slot.addView(fab, FrameLayout.LayoutParams(dp(60), dp(60), Gravity.CENTER))
-                fab.pressable { showAppPicker() }
+                slot.addView(fab, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.CENTER))
+                fab.pressable(R.raw.pop) { showAppPicker() }
             }
             nav.addView(slot, LinearLayout.LayoutParams(0, MATCH, 1f))
         }
@@ -397,7 +399,7 @@ class MainActivity : Activity() {
                 setPadding(dp(18), 0, dp(18), 0)
                 background = rounded(pal.accent, 22)
             }
-            b.pressable(onClick)
+            b.pressable(onClick = onClick)
             row.addView(b)
         }
         return row
@@ -642,49 +644,64 @@ class MainActivity : Activity() {
         add(col, wk, lp(bottom = dp(32)))
 
         // feeds
-        add(col, tv("Your feeds", 22f, pal.ink, 2), lp(bottom = dp(12)))
-        for (p in plats) {
-            val c = card(pal.pastel(p.pastel))
-            val head = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            head.addView(BrandView(this, p.key), LinearLayout.LayoutParams(dp(44), dp(44)))
-            head.addView(tv(p.name, 17f, pal.ink, 1), LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) })
-            val pt = tv("0", 22f, pal.ink, 2)
-            platTotals[p.key] = pt
-            head.addView(pt)
-            c.addView(head)
-            for (t in p.types) {
-                val line = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                }
-                line.addView(IconView(this, t, p.color), LinearLayout.LayoutParams(dp(20), dp(20)))
-                line.addView(tv(label(t, p.key), 15f, pal.ink), LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) })
-                val cnt = tv("0", 15f, pal.sub, 1)
-                line.addView(cnt)
-                c.addView(line, lp(top = dp(16)))
-                val bar = BarView(this)
-                c.addView(bar, lp(top = dp(8), h = dp(6)))
-                rows["${p.key}|$t"] = Row(cnt, bar)
-            }
-            add(col, c, lp(bottom = dp(12)))
-        }
-
-        // other apps
-        add(col, tv("Other apps", 22f, pal.ink, 2), lp(top = dp(20), bottom = dp(12)))
-        val tracked = Store.tracked(this)
-        if (tracked.isEmpty()) {
-            val c = card(pal.pastel(Pastel.PEACH))
-            c.addView(tv("Other apps pulling you in?", 17f, pal.ink, 1))
-            c.addView(tv("Add YouTube, TikTok, Snapchat or anything else. We count the scrolls and your active time.", 14f, pal.sub), lp(top = dp(4), bottom = dp(16)))
+        val shownPlats = Store.trackedPlatforms(this)
+        val customApps = Store.customApps(this)
+        if (shownPlats.isEmpty() && customApps.isEmpty()) {
+            val c = card(pal.pastel(Pastel.LAVENDER))
+            c.gravity = Gravity.CENTER_HORIZONTAL
+            val face = ImageView(this)
+            face.setImageResource(Moods.res(2))
+            c.addView(face, LinearLayout.LayoutParams(dp(120), dp(120)))
+            c.addView(
+                tv("Add your first app", 20f, pal.ink, 2).apply { gravity = Gravity.CENTER },
+                lp(top = dp(8))
+            )
+            c.addView(
+                tv("Pick the apps you scroll the most, like Instagram, Facebook, YouTube or WhatsApp. Only the ones you add are counted.", 14f, pal.sub)
+                    .apply { gravity = Gravity.CENTER },
+                lp(top = dp(4), bottom = dp(16))
+            )
             val b = primaryButton("+  Add apps")
             b.pressable { showAppPicker() }
             c.addView(b, lp())
             add(col, c, lp(bottom = dp(12)))
         } else {
-            tracked.forEachIndexed { idx, pkg ->
+            if (shownPlats.isNotEmpty()) {
+                add(col, tv("Your feeds", 22f, pal.ink, 2), lp(bottom = dp(12)))
+            }
+            for (p in plats) {
+                if (!shownPlats.contains(p.key)) continue
+                val c = card(pal.pastel(p.pastel))
+                val head = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                head.addView(BrandView(this, p.key), LinearLayout.LayoutParams(dp(44), dp(44)))
+                head.addView(tv(p.name, 17f, pal.ink, 1), LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) })
+                val pt = tv("0", 22f, pal.ink, 2)
+                platTotals[p.key] = pt
+                head.addView(pt)
+                c.addView(head)
+                for (t in p.types) {
+                    val line = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                    }
+                    line.addView(IconView(this, t, p.color), LinearLayout.LayoutParams(dp(20), dp(20)))
+                    line.addView(tv(label(t, p.key), 15f, pal.ink), LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) })
+                    val cnt = tv("0", 15f, pal.sub, 1)
+                    line.addView(cnt)
+                    c.addView(line, lp(top = dp(16)))
+                    val bar = BarView(this)
+                    c.addView(bar, lp(top = dp(8), h = dp(6)))
+                    rows["${p.key}|$t"] = Row(cnt, bar)
+                }
+                add(col, c, lp(bottom = dp(12)))
+            }
+            if (customApps.isNotEmpty()) {
+                add(col, tv("Other apps", 22f, pal.ink, 2), lp(top = dp(20), bottom = dp(12)))
+            }
+            customApps.forEachIndexed { idx, pkg ->
                 val c = card(pal.pastel(Pastel.CYCLE[idx % Pastel.CYCLE.size]))
                 val head = LinearLayout(this).apply {
                     orientation = LinearLayout.HORIZONTAL
@@ -736,6 +753,7 @@ class MainActivity : Activity() {
         var total = 0
         var maxRatio = 0f
         for (p in plats) {
+            if (!platTotals.containsKey(p.key)) continue
             var pt = 0
             for (t in p.types) {
                 val n = Store.today(this, p.key, t)
@@ -757,7 +775,7 @@ class MainActivity : Activity() {
         }
         for ((type, numView) in tileNums) {
             var s = 0
-            for (p in plats) if (p.types.contains(type)) s += Store.today(this, p.key, type)
+            for (p in plats) if (platTotals.containsKey(p.key) && p.types.contains(type)) s += Store.today(this, p.key, type)
             numView.text = s.toString()
         }
         for ((key, cr) in customRows) {
@@ -765,9 +783,9 @@ class MainActivity : Activity() {
             total += n
             val ratio = if (limit > 0) n.toFloat() / limit else 0f
             if (ratio > maxRatio) maxRatio = ratio
-            val mins = Store.today(this, key, "time") / 60000
+            val appMins = Store.today(this, key, "time") / 60000
             cr.total.text = n.toString()
-            cr.detail.text = "$n scrolls  ·  $mins min active"
+            cr.detail.text = "$n scrolls  ·  $appMins min active"
             val fill = when {
                 ratio >= 1f -> pal.red
                 ratio >= 0.8f -> pal.orange
@@ -778,7 +796,8 @@ class MainActivity : Activity() {
         }
 
         setHeroNumber(total, animate)
-        heroSub?.text = Moods.line(maxRatio)
+        val mins = Store.todayMinutes(this)
+        heroSub?.text = Moods.line(maxRatio) + if (mins > 0) "  ·  about $mins min" else ""
         val mood = Moods.forRatio(maxRatio)
         val img = heroMascot
         if (img != null && mood != lastMood) {
@@ -823,7 +842,109 @@ class MainActivity : Activity() {
         val btn = primaryButton("+  New message")
         btn.pressable { showRuleEditor(null) }
         add(col, btn, lp(top = dp(8)))
+
+        add(col, tv("Home screen widget", 22f, pal.ink, 2), lp(top = dp(32), bottom = dp(4)))
+        add(col, tv("A little nudge on your home screen. It changes as you scroll.", 14f, pal.sub), lp(bottom = dp(12)))
+        Store.widgetMsgs(this).forEachIndexed { i, wm -> add(col, widgetCard(i, wm), lp(bottom = dp(8))) }
+        val addW = secondaryButton("+  Add widget message")
+        addW.pressable { showWidgetMsgEditor(null) }
+        add(col, addW, lp(top = dp(8), bottom = dp(8)))
+        val pin = primaryButton("Add widget to home screen")
+        pin.pressable { pinWidget() }
+        add(col, pin, lp(top = dp(4)))
         return sv
+    }
+
+    private fun widgetCard(i: Int, msg: String): LinearLayout {
+        val c = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            background = rounded(pal.pastel(Pastel.CYCLE[(i + 1) % Pastel.CYCLE.size]), 22)
+        }
+        val t = tv(msg, 14f, pal.ink)
+        t.maxLines = 3
+        c.addView(t, LinearLayout.LayoutParams(0, WRAP, 1f))
+        c.pressable { showWidgetMsgEditor(i) }
+        return c
+    }
+
+    private fun pinWidget() {
+        val mgr = AppWidgetManager.getInstance(this)
+        if (mgr.isRequestPinAppWidgetSupported) {
+            mgr.requestPinAppWidget(ComponentName(this, WidgetProvider::class.java), null, null)
+        } else {
+            toast("Long-press your home screen, tap Widgets, then View Counter.")
+        }
+    }
+
+    private fun showWidgetMsgEditor(index: Int?) {
+        val list = Store.widgetMsgs(this)
+        sheet { box, close ->
+            box.addView(tv(if (index == null) "New widget message" else "Edit widget message", 24f, pal.ink, 2, -0.01f), lp(bottom = dp(8)))
+            box.addView(
+                tv("Use {reels}, {posts}, {stories}, {messages}, {total} and {mins} to show your numbers.", 13f, pal.sub),
+                lp(bottom = dp(12))
+            )
+            val et = EditText(this).apply {
+                setText(if (index != null && index < list.size) list[index] else "")
+                hint = "ভাই, এবার একটু বই পড়ো..."
+                setHintTextColor(pal.sub)
+                setTextColor(pal.ink)
+                textSize = 16f
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                minLines = 2
+                maxLines = 4
+                gravity = Gravity.TOP
+                background = rounded(pal.track, 16)
+                setPadding(dp(16), dp(14), dp(16), dp(14))
+            }
+            box.addView(et, lp(bottom = dp(12)))
+            val prev = tv("", 14f, pal.sub)
+            fun refreshPreview() {
+                val raw = et.text.toString().trim()
+                prev.text = "Preview: " + if (raw.isEmpty()) "..." else Store.fillTemplate(this, raw)
+            }
+            et.addTextChangedListener(object : TextWatcher {
+                override fun afterTextChanged(s: Editable?) {
+                    refreshPreview()
+                }
+
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            })
+            refreshPreview()
+            box.addView(prev, lp(bottom = dp(16)))
+            val save = primaryButton("Save")
+            save.pressable {
+                val text = et.text.toString().trim()
+                if (text.isEmpty()) {
+                    toast("Write a message first")
+                } else {
+                    if (index == null || index >= list.size) list.add(text) else list[index] = text
+                    Store.saveWidgetMsgs(this, list)
+                    WidgetProvider.refresh(this)
+                    close()
+                    showTab(1, false)
+                    Sfx.play(this, R.raw.chime, 0.7f)
+                }
+            }
+            box.addView(save, lp())
+            if (index != null && index < list.size && list.size > 1) {
+                val del = tv("Delete message", 15f, pal.red, 1).apply {
+                    gravity = Gravity.CENTER
+                    minHeight = dp(52)
+                }
+                del.pressable {
+                    list.removeAt(index)
+                    Store.saveWidgetMsgs(this, list)
+                    WidgetProvider.refresh(this)
+                    close()
+                    showTab(1, false)
+                }
+                box.addView(del, lp(top = dp(4)))
+            }
+        }
     }
 
     private fun ruleCard(r: Rule, i: Int): LinearLayout {
@@ -867,11 +988,12 @@ class MainActivity : Activity() {
             box.addView(tv(if (existing == null) "New message" else "Edit message", 24f, pal.ink, 2, -0.01f), lp(bottom = dp(16)))
 
             box.addView(sectionLabel("WHERE"))
-            val platOptions = mutableListOf(
-                Pair("*", "All apps"), Pair("instagram", "Instagram"), Pair("facebook", "Facebook"),
-                Pair("twitter", "Twitter / X"), Pair("whatsapp", "WhatsApp")
-            )
-            for (pkg in Store.tracked(this)) platOptions.add(Pair("app:$pkg", Labels.appLabel(this, pkg)))
+            val platOptions = mutableListOf(Pair("*", "All apps"))
+            val seenKeys = HashSet<String>()
+            for (pkg in Store.tracked(this)) {
+                val key = Store.PACKAGES[pkg] ?: "app:$pkg"
+                if (seenKeys.add(key)) platOptions.add(Pair(key, Labels.platform(this, key)))
+            }
             box.addView(chips(platOptions, platform) { platform = it }, lp(top = dp(8), bottom = dp(16)))
 
             box.addView(sectionLabel("WHAT"))
@@ -996,24 +1118,13 @@ class MainActivity : Activity() {
     // ---------- APPS ----------
     private fun buildApps(): View {
         val (sv, col) = newScreen()
-        add(col, header("Apps", "Choose what pulls you in."), lp(top = dp(8), bottom = dp(24)))
+        add(col, header("Apps", "Only the apps you add are counted."), lp(top = dp(8), bottom = dp(24)))
 
-        val bi = card(pal.pastel(Pastel.LAVENDER))
-        bi.addView(tv("Always tracked", 17f, pal.ink, 1))
-        val brow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        for (p in plats) {
-            brow.addView(BrandView(this, p.key), LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(10) })
-        }
-        bi.addView(brow, lp(top = dp(12), bottom = dp(12)))
-        bi.addView(tv("Stories, posts, reels and messages are counted separately for each one.", 14f, pal.sub))
-        add(col, bi, lp(bottom = dp(24)))
-
-        add(col, tv("Your apps", 22f, pal.ink, 2), lp(bottom = dp(12)))
         val tracked = Store.tracked(this)
         if (tracked.isEmpty()) {
             val c = card(pal.pastel(Pastel.PEACH))
             c.addView(tv("Nothing here yet", 17f, pal.ink, 1))
-            c.addView(tv("Tap the + button below to add YouTube, TikTok, Snapchat or any app that distracts you.", 14f, pal.sub), lp(top = dp(4)))
+            c.addView(tv("Tap the + button below to add Instagram, Facebook, YouTube, WhatsApp or any app that distracts you.", 14f, pal.sub), lp(top = dp(4)))
             add(col, c, lp(bottom = dp(12)))
         }
         tracked.forEachIndexed { idx, pkg ->
@@ -1023,16 +1134,21 @@ class MainActivity : Activity() {
                 setPadding(dp(16), dp(14), dp(12), dp(14))
                 background = rounded(pal.pastel(Pastel.CYCLE[idx % Pastel.CYCLE.size]), 24)
             }
-            val icon = ImageView(this)
-            try {
-                icon.setImageDrawable(packageManager.getApplicationIcon(pkg))
-            } catch (_: Exception) {
-                icon.setImageResource(R.drawable.ic_stat_eye)
+            val platKey = Store.PACKAGES[pkg]
+            if (platKey != null) {
+                c.addView(BrandView(this, platKey), LinearLayout.LayoutParams(dp(44), dp(44)))
+            } else {
+                val icon = ImageView(this)
+                try {
+                    icon.setImageDrawable(packageManager.getApplicationIcon(pkg))
+                } catch (_: Exception) {
+                    icon.setImageResource(R.drawable.ic_stat_eye)
+                }
+                c.addView(icon, LinearLayout.LayoutParams(dp(44), dp(44)))
             }
-            c.addView(icon, LinearLayout.LayoutParams(dp(44), dp(44)))
             val t = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             t.addView(tv(Labels.appLabel(this, pkg), 16f, pal.ink, 1))
-            t.addView(tv("Counts scrolls and active time", 13f, pal.sub))
+            t.addView(tv(if (platKey != null) "Counts stories, posts, reels and messages" else "Counts scrolls and active time", 13f, pal.sub))
             c.addView(t, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) })
             val rm = FrameLayout(this).apply { background = circle(pal.track) }
             rm.addView(IconView(this, "close", pal.ink), FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER))
@@ -1056,7 +1172,8 @@ class MainActivity : Activity() {
             val pm = packageManager
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
             val sugg = setOf(
-                "com.google.android.youtube", "com.zhiliaoapp.musically", "com.ss.android.ugc.trill",
+                "com.instagram.android", "com.facebook.katana", "com.facebook.orca", "com.twitter.android",
+                "com.whatsapp", "com.google.android.youtube", "com.zhiliaoapp.musically", "com.ss.android.ugc.trill",
                 "com.snapchat.android", "com.reddit.frontpage", "com.pinterest", "com.linkedin.android",
                 "org.telegram.messenger", "com.discord", "com.facebook.lite", "com.instagram.lite"
             )
@@ -1064,7 +1181,7 @@ class MainActivity : Activity() {
             val seen = HashSet<String>()
             for (ri in pm.queryIntentActivities(intent, 0)) {
                 val pkg = ri.activityInfo.packageName
-                if (pkg == packageName || Store.PACKAGES.containsKey(pkg) || !seen.add(pkg)) continue
+                if (pkg == packageName || !seen.add(pkg)) continue
                 list.add(AppInfo(pkg, ri.loadLabel(pm).toString(), ri.loadIcon(pm), sugg.contains(pkg)))
             }
             list.sortWith(compareBy<AppInfo>({ !it.suggested }, { it.label.lowercase() }))
@@ -1290,7 +1407,7 @@ class MainActivity : Activity() {
         }
         add(col, reset, lp(top = dp(8)))
 
-        val about = tv("View Counter 2.1.0", 13f, pal.sub).apply { gravity = Gravity.CENTER }
+        val about = tv("View Counter 2.2.0", 13f, pal.sub).apply { gravity = Gravity.CENTER }
         val diag = tv("", 11f, pal.sub).apply {
             gravity = Gravity.CENTER
             visibility = View.GONE

@@ -110,7 +110,82 @@ object Store {
     fun setTracked(c: Context, list: List<String>) =
         prefs(c).edit().putString("tracked", list.distinct().joinToString(",")).apply()
 
-    fun watched(c: Context): Set<String> = PACKAGES.keys + tracked(c)
+    fun watched(c: Context): Set<String> = tracked(c).toSet()
+
+    /** Built-in platforms (Instagram, Facebook, X, WhatsApp) the user has added, in a fixed order. */
+    fun trackedPlatforms(c: Context): List<String> {
+        val set = tracked(c).mapNotNull { PACKAGES[it] }.toSet()
+        return listOf("instagram", "facebook", "twitter", "whatsapp").filter { set.contains(it) }
+    }
+
+    fun customApps(c: Context): List<String> = tracked(c).filter { !PACKAGES.containsKey(it) }
+
+    fun maxCountToday(c: Context): Int {
+        var m = 0
+        val prefix = "d|${day()}|"
+        for ((k, v) in prefs(c).all) {
+            if (v !is Int || !k.startsWith(prefix)) continue
+            val parts = k.split("|")
+            if (parts.size == 4 && parts[3] in COUNT_TYPES && v > m) m = v
+        }
+        return m
+    }
+
+    fun todayMinutes(c: Context): Int {
+        var ms = 0L
+        val prefix = "d|${day()}|"
+        for ((k, v) in prefs(c).all) {
+            if (v !is Int || !k.startsWith(prefix)) continue
+            val parts = k.split("|")
+            if (parts.size == 4 && parts[3] == "time") ms += v
+        }
+        return (ms / 60000L).toInt()
+    }
+
+    // ---------- widget messages ----------
+    private val DEFAULT_WIDGET = listOf(
+        "{reels}টা রিল দেখেছ ভাই, এবার একটু বই পড়ো।",
+        "ভাই, একটু লেখাপড়া করো! আজ {mins} মিনিট স্ক্রলে চলে গেছে।",
+        "এই {mins} মিনিটে বন্ধুদের সাথে একটু আড্ডা দিতে পারতে।",
+        "আজ {total}টা কনটেন্ট স্ক্রল করেছ। ফোনটা রেখে একটু হাঁটো।",
+        "{mins} মিনিট নষ্ট! এই সময়ে নতুন কিছু শিখতে পারতে।"
+    )
+
+    fun widgetMsgs(c: Context): MutableList<String> {
+        val raw = prefs(c).getString("wmsgs", null) ?: return DEFAULT_WIDGET.toMutableList()
+        val out = mutableListOf<String>()
+        try {
+            val a = JSONArray(raw)
+            for (i in 0 until a.length()) out.add(a.getString(i))
+        } catch (_: Exception) {
+        }
+        return out
+    }
+
+    fun saveWidgetMsgs(c: Context, list: List<String>) {
+        val a = JSONArray()
+        for (m in list) a.put(m)
+        prefs(c).edit().putString("wmsgs", a.toString()).apply()
+    }
+
+    /** Fills {reels} {posts} {stories} {messages} {total} {mins}. Bangla text gets Bangla digits. */
+    fun fillTemplate(c: Context, tpl: String): String {
+        val bn = tpl.any { it.code in 0x0980..0x09FF }
+        fun num(n: Int): String {
+            val s = n.toString()
+            if (!bn) return s
+            val sb = StringBuilder()
+            for (ch in s) sb.append(if (ch in '0'..'9') (0x09E6 + (ch - '0')).toChar() else ch)
+            return sb.toString()
+        }
+        return tpl
+            .replace("{reels}", num(sumToday(c, "*", "reels")))
+            .replace("{posts}", num(sumToday(c, "*", "posts")))
+            .replace("{stories}", num(sumToday(c, "*", "stories")))
+            .replace("{messages}", num(sumToday(c, "*", "messages")))
+            .replace("{total}", num(sumToday(c, "*", "*")))
+            .replace("{mins}", num(todayMinutes(c)))
+    }
 
     // ---------- rules ----------
     private fun defaultRules(): MutableList<Rule> = mutableListOf(

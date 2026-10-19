@@ -95,14 +95,14 @@ fun Context.tv(t: String, sp: Float, color: Int, weight: Int = 0, spacing: Float
     }
 
 /** Press feedback happens on touch-down: tiny squeeze, soft tick, haptic. Release springs back. */
-fun View.pressable(onClick: () -> Unit) {
+fun View.pressable(sound: Int = R.raw.tap, onClick: () -> Unit) {
     isClickable = true
     setOnTouchListener { v, ev ->
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 v.animate().scaleX(0.96f).scaleY(0.96f).setStartDelay(0).setDuration(90)
                     .setInterpolator(DecelerateInterpolator()).start()
-                Sfx.play(v.context, R.raw.tap)
+                if (sound != 0) Sfx.play(v.context, sound)
                 Sfx.haptic(v)
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -212,7 +212,7 @@ fun buildReactionCard(c: Context, title: String, message: String, mood: Int, onD
         minHeight = c.dp(52)
         background = c.rounded(0xFF6C4DFF.toInt(), 26)
     }
-    btn.pressable(onDone)
+    btn.pressable(onClick = onDone)
     card.addView(
         btn,
         LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)

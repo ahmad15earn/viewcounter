@@ -27,6 +27,9 @@ class CounterService : AccessibilityService() {
     private val lastCount = HashMap<String, Long>()
     private val lastEvt = HashMap<String, Long>()
     private val lastDetect = HashMap<String, Long>()
+    private val timeAcc = HashMap<String, Long>()
+    private val lastFlush = HashMap<String, Long>()
+    private var lastWidget = 0L
     private val lastMode = HashMap<String, String>()
     private val cache = ConcurrentHashMap<String, Detection>()
     private val pending = ConcurrentHashMap<String, Boolean>()
@@ -78,7 +81,9 @@ class CounterService : AccessibilityService() {
         try {
             trackedSet = Store.tracked(this).toSet()
             val info = serviceInfo ?: return
-            info.packageNames = Store.watched(this).toTypedArray()
+            val w = Store.watched(this)
+            // an empty list would mean every app, so use a package that never exists
+            info.packageNames = if (w.isEmpty()) arrayOf("com.viewcounter.none") else w.toTypedArray()
             serviceInfo = info
         } catch (_: Exception) {
         }
@@ -108,14 +113,12 @@ class CounterService : AccessibilityService() {
         if (!isScroll && !isContent) return
         val now = SystemClock.uptimeMillis()
 
+        // only apps you added with the + button are counted
+        if (pkg !in trackedSet) return
         val platform = Store.PACKAGES[pkg]
+        trackTime(platform ?: "app:$pkg", now)
         if (platform == null) {
-            // one of the apps you added with the + button
-            if (pkg !in trackedSet) return
             val key = "app:$pkg"
-            val prev = lastEvt[key] ?: 0L
-            if (prev != 0L && now - prev < 5000L) Store.inc(this, key, "time", (now - prev).toInt())
-            lastEvt[key] = now
             if (!isScroll) return
             if (now - (lastCount[key] ?: 0L) < 450L) return
             lastCount[key] = now
@@ -153,6 +156,21 @@ class CounterService : AccessibilityService() {
 
         val n = Store.inc(this, platform, mode)
         afterCount(platform, mode, n)
+    }
+
+    /** Active time: gaps between events shorter than 5 seconds, flushed to disk every 5 seconds. */
+    private fun trackTime(key: String, now: Long) {
+        val prev = lastEvt[key] ?: 0L
+        lastEvt[key] = now
+        if (prev != 0L && now - prev < 5000L) timeAcc[key] = (timeAcc[key] ?: 0L) + (now - prev)
+        if (now - (lastFlush[key] ?: 0L) >= 5000L) {
+            lastFlush[key] = now
+            val ms = timeAcc[key] ?: 0L
+            if (ms > 0L) {
+                timeAcc[key] = 0L
+                Store.inc(this, key, "time", ms.toInt())
+            }
+        }
     }
 
     private fun requestDetect(platform: String, pkg: String, now: Long) {
@@ -252,6 +270,11 @@ class CounterService : AccessibilityService() {
 
     private fun afterCount(platform: String, type: String, n: Int) {
         showPill(n)
+        val t = SystemClock.uptimeMillis()
+        if (t - lastWidget > 15000L) {
+            lastWidget = t
+            WidgetProvider.refresh(this)
+        }
         for (r in rules()) {
             if (!r.enabled) continue
             if (r.platform != "*" && r.platform != platform) continue
