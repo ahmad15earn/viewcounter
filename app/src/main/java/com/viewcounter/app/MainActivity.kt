@@ -1321,6 +1321,15 @@ class MainActivity : Activity() {
         return row
     }
 
+    private fun previewGate() {
+        val theme = android.R.style.Theme_Material_Light_NoActionBar
+        val d = Dialog(this, theme)
+        val v = buildGateView(this, "Instagram", { d.dismiss() }, { d.dismiss() })
+        d.setContentView(v)
+        d.window?.setLayout(MATCH, MATCH)
+        d.show()
+    }
+
     private fun exportData() {
         val all = HashMap<String, Any?>(Store.prefs(this).all)
         val sb = StringBuilder("date,app,type,count\n")
@@ -1391,7 +1400,7 @@ class MainActivity : Activity() {
         prefs.addView(toggleRow("Haptics", "A tiny buzz when you tap", "haptics"))
         prefs.addView(toggleRow("Live counter", "Brain pill over your apps while you scroll", "pill"))
         prefs.addView(toggleRow("Notifications", "Your messages as notifications", "notify"))
-        prefs.addView(toggleRow("Mindful pause", "Breathe for 3 seconds and ask before opening your apps", "gate", false))
+        prefs.addView(toggleRow("Mindful pause", "Asks before an app opens. Counting starts after you say yes.", "gate", false))
         add(col, prefs, lp(bottom = dp(12)))
 
         val test = secondaryButton("Send a test message")
@@ -1401,7 +1410,11 @@ class MainActivity : Activity() {
             Notifier.post(this, 99, title, msg, 6)
             showPreview(title, msg, 6)
         }
-        add(col, test, lp(bottom = dp(12)))
+        add(col, test, lp(bottom = dp(8)))
+
+        val gateTest = secondaryButton("Preview mindful pause")
+        gateTest.pressable { previewGate() }
+        add(col, gateTest, lp(bottom = dp(12)))
 
         // privacy
         val priv = card(pal.pastel(Pastel.GREEN))
@@ -1435,13 +1448,13 @@ class MainActivity : Activity() {
         add(col, export, lp(top = dp(8)))
         add(col, reset, lp(top = dp(8)))
 
-        val about = tv("View Counter 2.3.0", 13f, pal.sub).apply { gravity = Gravity.CENTER }
+        val about = tv("View Counter 2.4.0", 13f, pal.sub).apply { gravity = Gravity.CENTER }
         val diag = tv("", 11f, pal.sub).apply {
             gravity = Gravity.CENTER
             visibility = View.GONE
         }
         about.pressable {
-            diag.text = "Last detection: " + Store.getDebug(this)
+            diag.text = "Last detection: " + Store.getDebug(this) + "\n" + Store.getGateDebug(this)
             diag.visibility = if (diag.visibility == View.GONE) View.VISIBLE else View.GONE
         }
         add(col, about, lp(top = dp(8)))

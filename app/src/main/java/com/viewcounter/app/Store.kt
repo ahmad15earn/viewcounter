@@ -102,6 +102,8 @@ object Store {
 
     fun setDebug(c: Context, s: String) = prefs(c).edit().putString("debug", s).apply()
     fun getDebug(c: Context): String = prefs(c).getString("debug", "nothing detected yet") ?: ""
+    fun setGateDebug(c: Context, s: String) = prefs(c).edit().putString("gdebug", s).apply()
+    fun getGateDebug(c: Context): String = prefs(c).getString("gdebug", "not seen yet") ?: ""
 
     // ---------- tracked apps ----------
     fun tracked(c: Context): List<String> =

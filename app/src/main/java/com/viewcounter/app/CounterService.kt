@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
@@ -38,6 +39,12 @@ class CounterService : AccessibilityService() {
     private val lastFlush = HashMap<String, Long>()
     private val lastSeen = HashMap<String, Long>()
     private val passUntil = HashMap<String, Long>()
+    private val candSig = HashMap<String, Int>()
+    private val seenSigs = HashMap<String, LinkedHashSet<Int>>()
+    private val lastStoryTs = HashMap<String, Long>()
+    private var fg: String? = null
+    private var awayCount = 0
+    private var lastPolled: String? = "?"
     private var lastWidget = 0L
     private val numRe = Regex("[0-9\u09E6-\u09EF:.]+")
 
@@ -76,10 +83,13 @@ class CounterService : AccessibilityService() {
         applyPackages()
         Store.prefs(this).registerOnSharedPreferenceChangeListener(prefListener)
         Store.setDebug(this, "service connected")
+        handler.removeCallbacks(poll)
+        handler.post(poll)
     }
 
     override fun onDestroy() {
         Store.prefs(this).unregisterOnSharedPreferenceChangeListener(prefListener)
+        handler.removeCallbacks(poll)
         worker?.quitSafely()
         removePill()
         removePopup()
@@ -124,9 +134,8 @@ class CounterService : AccessibilityService() {
         if (pkg !in trackedSet) return
         val now = SystemClock.uptimeMillis()
 
-        // Mindful pause: a window opening after you were away from the app
-        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) maybeGate(pkg, now)
-        lastSeen[pkg] = now
+        // nothing is counted while the mindful pause is on screen
+        if (gate != null) return
 
         val isScroll = e.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED
         val isContent = e.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
@@ -165,12 +174,34 @@ class CounterService : AccessibilityService() {
         val key = "$platform|$mode"
         var add = 0
         if (mode == "stories") {
-            // one story = one change of what is on screen. Waiting on a story must not count again.
-            val first = lastMode[platform] != "stories"
+            // One story = one stable change of what is on screen. Waiting on a story, going back
+            // to one you already saw, or a flickering screen must not count again.
             val sig = cached?.sig ?: 0
-            if (first || (sig != lastSig[platform] && now - (lastCount[key] ?: 0L) > 800L)) add = 1
-            lastSig[platform] = sig
+            val seen = seenSigs.getOrPut(platform) { LinkedHashSet() }
+            val wasIn = lastMode[platform] == "stories"
+            val sinceStory = now - (lastStoryTs[platform] ?: 0L)
+            lastStoryTs[platform] = now
             lastMode[platform] = mode
+            if (!wasIn && sinceStory > 3000L) {
+                seen.clear()
+                seen.add(sig)
+                lastSig[platform] = sig
+                candSig.remove(platform)
+                add = 1
+            } else if (sig != lastSig[platform]) {
+                if (candSig[platform] == sig) {
+                    candSig.remove(platform)
+                    lastSig[platform] = sig
+                    if (seen.add(sig) && now - (lastCount[key] ?: 0L) > 1000L) {
+                        add = 1
+                        if (seen.size > 30) seen.remove(seen.first())
+                    }
+                } else {
+                    candSig[platform] = sig
+                }
+            } else {
+                candSig.remove(platform)
+            }
         } else {
             lastMode[platform] = mode
             if (!isScroll) return
@@ -482,11 +513,51 @@ class CounterService : AccessibilityService() {
     }
 
     // ---------- mindful pause ----------
-    private fun maybeGate(pkg: String, now: Long) {
+    private val ignoreWindows = setOf(
+        "com.android.systemui", "com.samsung.android.app.cocktailbarservice",
+        "com.samsung.android.honeyboard", "com.google.android.inputmethod.latin", "com.sec.android.inputmethod"
+    )
+
+    /** Once a second (screen on) check which app is in front. A tracked app coming to the front = "opening". */
+    private val poll = object : Runnable {
+        override fun run() {
+            try {
+                pollForeground()
+            } catch (_: Exception) {
+            }
+            handler.postDelayed(this, 1000)
+        }
+    }
+
+    private fun pollForeground() {
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        if (!pm.isInteractive) {
+            fg = null
+            awayCount = 3
+            return
+        }
+        val p = rootInActiveWindow?.packageName?.toString()
+        if (p != lastPolled) {
+            lastPolled = p
+            Store.setGateDebug(this, "front app: $p, tracked=${p != null && trackedSet.contains(p)}")
+        }
+        if (p != null && trackedSet.contains(p)) {
+            awayCount = 0
+            if (fg != p) {
+                fg = p
+                onOpened(p)
+            }
+        } else if (p == null || !ignoreWindows.contains(p)) {
+            awayCount++
+            // away only after 3 seconds, so the notification shade or a keyboard does not count as leaving
+            if (awayCount >= 3) fg = null
+        }
+    }
+
+    private fun onOpened(pkg: String) {
         if (!Store.flag(this, "gate", false)) return
         if (gate != null) return
-        val away = now - (lastSeen[pkg] ?: 0L) > 30000L
-        if (!away || now < (passUntil[pkg] ?: 0L)) return
+        if (SystemClock.uptimeMillis() < (passUntil[pkg] ?: 0L)) return
         showGate(pkg)
     }
 
@@ -502,7 +573,9 @@ class CounterService : AccessibilityService() {
                 performGlobalAction(GLOBAL_ACTION_HOME)
             },
             {
-                passUntil[pkg] = SystemClock.uptimeMillis() + 15 * 60 * 1000L
+                passUntil[pkg] = SystemClock.uptimeMillis() + 90 * 1000L
+                maxIdx.clear()
+                idxTime.clear()
                 closeGate()
             }
         )
