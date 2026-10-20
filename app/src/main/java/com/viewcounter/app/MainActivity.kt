@@ -410,7 +410,7 @@ class MainActivity : Activity() {
             close?.invoke()
             askNotif()
         })
-        box.addView(stepRow("Keep running in background", "Stops the phone from pausing the counter", batteryOk(), "Allow") {
+        box.addView(stepRow("Keep running in background", "Samsung: also add it under Battery > Never sleeping apps", batteryOk(), "Allow") {
             close?.invoke()
             askBattery()
         })
@@ -435,7 +435,11 @@ class MainActivity : Activity() {
         sheet { box, close ->
             box.addView(tv("Turn on counting", 24f, pal.ink, 2, -0.01f))
             box.addView(
-                tv("Android protects this setting, so it takes two quick taps. We open each screen for you.", 14f, pal.sub),
+                tv("Why? Android has no other way to tell which part of an app you are in. We only count scrolls. Nothing is saved or sent, and this app has no internet permission.", 14f, pal.sub),
+                lp(bottom = dp(8))
+            )
+            box.addView(
+                tv("It takes two quick taps. We open each screen for you.", 14f, pal.sub),
                 lp(bottom = dp(16))
             )
             box.addView(tv("Step 1 · Allow restricted settings", 16f, pal.ink, 1))
@@ -797,7 +801,10 @@ class MainActivity : Activity() {
 
         setHeroNumber(total, animate)
         val mins = Store.todayMinutes(this)
-        heroSub?.text = Moods.line(maxRatio) + if (mins > 0) "  ·  about $mins min" else ""
+        val skipped = Store.today(this, "gate", "no")
+        heroSub?.text = Moods.line(maxRatio) +
+            (if (mins > 0) "  ·  about $mins min" else "") +
+            (if (skipped > 0) "  ·  $skipped skipped" else "")
         val mood = Moods.forRatio(maxRatio)
         val img = heroMascot
         if (img != null && mood != lastMood) {
@@ -1297,7 +1304,7 @@ class MainActivity : Activity() {
     }
 
     // ---------- SETTINGS ----------
-    private fun toggleRow(title: String, sub: String, key: String): LinearLayout {
+    private fun toggleRow(title: String, sub: String, key: String, def: Boolean = true): LinearLayout {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1308,10 +1315,27 @@ class MainActivity : Activity() {
         t.addView(tv(sub, 13f, pal.sub))
         row.addView(t, LinearLayout.LayoutParams(0, WRAP, 1f))
         val tg = ToggleView(this, pal.accent, pal.track)
-        tg.set(Store.flag(this, key), false)
+        tg.set(Store.flag(this, key, def), false)
         tg.onChange = { Store.setFlag(this, key, it) }
         row.addView(tg)
         return row
+    }
+
+    private fun exportData() {
+        val all = HashMap<String, Any?>(Store.prefs(this).all)
+        val sb = StringBuilder("date,app,type,count\n")
+        for (k in all.keys.sorted()) {
+            val v = all[k]
+            if (v !is Int || !k.startsWith("d|")) continue
+            val p = k.split("|")
+            if (p.size == 4) sb.append("${p[1]},${p[2]},${p[3]},$v\n")
+        }
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "View Counter data")
+            putExtra(Intent.EXTRA_TEXT, sb.toString())
+        }
+        startActivity(Intent.createChooser(send, "Export data"))
     }
 
     private fun buildSettings(): View {
@@ -1367,6 +1391,7 @@ class MainActivity : Activity() {
         prefs.addView(toggleRow("Haptics", "A tiny buzz when you tap", "haptics"))
         prefs.addView(toggleRow("Live counter", "Brain pill over your apps while you scroll", "pill"))
         prefs.addView(toggleRow("Notifications", "Your messages as notifications", "notify"))
+        prefs.addView(toggleRow("Mindful pause", "Breathe for 3 seconds and ask before opening your apps", "gate", false))
         add(col, prefs, lp(bottom = dp(12)))
 
         val test = secondaryButton("Send a test message")
@@ -1405,9 +1430,12 @@ class MainActivity : Activity() {
                 }
                 .show()
         }
+        val export = secondaryButton("Export my data")
+        export.pressable { exportData() }
+        add(col, export, lp(top = dp(8)))
         add(col, reset, lp(top = dp(8)))
 
-        val about = tv("View Counter 2.2.0", 13f, pal.sub).apply { gravity = Gravity.CENTER }
+        val about = tv("View Counter 2.3.0", 13f, pal.sub).apply { gravity = Gravity.CENTER }
         val diag = tv("", 11f, pal.sub).apply {
             gravity = Gravity.CENTER
             visibility = View.GONE

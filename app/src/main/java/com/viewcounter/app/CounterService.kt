@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.content.SharedPreferences
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -19,18 +20,27 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.min
 
 class CounterService : AccessibilityService() {
 
-    private class Detection(val mode: String, val ts: Long)
+    private class Det(val mode: String, val sample: List<String>, val sig: Int)
+    private class Detection(val mode: String, val ts: Long, val sig: Int)
 
     private val lastCount = HashMap<String, Long>()
     private val lastEvt = HashMap<String, Long>()
     private val lastDetect = HashMap<String, Long>()
+    private val lastMode = HashMap<String, String>()
+    private val lastSig = HashMap<String, Int>()
+    private val maxIdx = HashMap<String, Int>()
+    private val idxTime = HashMap<String, Long>()
     private val timeAcc = HashMap<String, Long>()
     private val lastFlush = HashMap<String, Long>()
+    private val lastSeen = HashMap<String, Long>()
+    private val passUntil = HashMap<String, Long>()
     private var lastWidget = 0L
-    private val lastMode = HashMap<String, String>()
+    private val numRe = Regex("[0-9\u09E6-\u09EF:.]+")
+
     private val cache = ConcurrentHashMap<String, Detection>()
     private val pending = ConcurrentHashMap<String, Boolean>()
     private val handler = Handler(Looper.getMainLooper())
@@ -40,6 +50,7 @@ class CounterService : AccessibilityService() {
     private var rulesCache: List<Rule>? = null
 
     private var popup: View? = null
+    private var gate: View? = null
     private var pill: LinearLayout? = null
     private var pillText: TextView? = null
     private var pillImg: ImageView? = null
@@ -53,6 +64,7 @@ class CounterService : AccessibilityService() {
     private val hidePill = Runnable {
         pill?.animate()?.alpha(0f)?.setStartDelay(0)?.setDuration(250)?.withEndAction { removePill() }?.start()
     }
+    private val gateTimeout = Runnable { closeGate() }
 
     override fun onServiceConnected() {
         Sfx.warm(this)
@@ -71,6 +83,7 @@ class CounterService : AccessibilityService() {
         worker?.quitSafely()
         removePill()
         removePopup()
+        removeGate()
         super.onDestroy()
     }
 
@@ -108,22 +121,29 @@ class CounterService : AccessibilityService() {
     private fun handle(e: AccessibilityEvent?) {
         if (e == null) return
         val pkg = e.packageName?.toString() ?: return
+        if (pkg !in trackedSet) return
+        val now = SystemClock.uptimeMillis()
+
+        // Mindful pause: a window opening after you were away from the app
+        if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) maybeGate(pkg, now)
+        lastSeen[pkg] = now
+
         val isScroll = e.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED
         val isContent = e.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         if (!isScroll && !isContent) return
-        val now = SystemClock.uptimeMillis()
 
-        // only apps you added with the + button are counted
-        if (pkg !in trackedSet) return
         val platform = Store.PACKAGES[pkg]
         trackTime(platform ?: "app:$pkg", now)
+
         if (platform == null) {
-            val key = "app:$pkg"
+            // an app you added with the + button: count only forward scrolling
             if (!isScroll) return
-            if (now - (lastCount[key] ?: 0L) < 450L) return
-            lastCount[key] = now
-            val n = Store.inc(this, key, "scrolls")
-            afterCount(key, "scrolls", n)
+            val key = "app:$pkg"
+            val add = forwardItems("$key|scrolls", e, now)
+            if (add > 0) {
+                val n = Store.inc(this, key, "scrolls", add)
+                afterCount(key, "scrolls", n)
+            }
             return
         }
 
@@ -142,27 +162,67 @@ class CounterService : AccessibilityService() {
         if (platform == "whatsapp" && mode != "stories" && mode != "messages") return
         if (platform == "twitter" && mode == "stories") return
 
-        val entering = mode == "stories" && lastMode[platform] != "stories"
-        lastMode[platform] = mode
-        val gap = when (mode) {
-            "stories" -> if (isContent) 2500L else 900L
-            "reels" -> 450L
-            "posts" -> 500L
-            else -> 600L
-        }
         val key = "$platform|$mode"
-        if (!entering && now - (lastCount[key] ?: 0L) < gap) return
+        var add = 0
+        if (mode == "stories") {
+            // one story = one change of what is on screen. Waiting on a story must not count again.
+            val first = lastMode[platform] != "stories"
+            val sig = cached?.sig ?: 0
+            if (first || (sig != lastSig[platform] && now - (lastCount[key] ?: 0L) > 800L)) add = 1
+            lastSig[platform] = sig
+            lastMode[platform] = mode
+        } else {
+            lastMode[platform] = mode
+            if (!isScroll) return
+            add = if (mode == "messages") {
+                if (now - (lastCount[key] ?: 0L) < 600L) 0 else 1
+            } else {
+                forwardItems(key, e, now)
+            }
+        }
+        if (add <= 0) return
         lastCount[key] = now
-
-        val n = Store.inc(this, platform, mode)
+        val n = Store.inc(this, platform, mode, add)
         afterCount(platform, mode, n)
     }
 
-    /** Active time: gaps between events shorter than 5 seconds, flushed to disk every 5 seconds. */
+    /**
+     * How many new items this scroll moved forward. Scrolling back, or passing items you already saw, counts 0.
+     * Lists report item positions, which also makes fast scrolling exact.
+     */
+    private fun forwardItems(key: String, e: AccessibilityEvent, now: Long): Int {
+        val last = e.toIndex
+        if (last >= 0 && e.itemCount > 0) {
+            val prev = maxIdx[key]
+            val stale = now - (idxTime[key] ?: 0L) > 60000L
+            idxTime[key] = now
+            if (prev == null || stale || last < prev - 30) {
+                maxIdx[key] = last
+                return if (key.endsWith("|reels")) 1 else 0
+            }
+            if (last > prev) {
+                maxIdx[key] = last
+                return min(last - prev, 5)
+            }
+            return 0
+        }
+        var dy = 0
+        var dx = 0
+        if (Build.VERSION.SDK_INT >= 28) {
+            dy = e.scrollDeltaY
+            dx = e.scrollDeltaX
+        }
+        if (dy < 0 || (dy == 0 && dx != 0)) return 0
+        if (now - (lastCount[key] ?: 0L) < 450L) return 0
+        lastCount[key] = now
+        return 1
+    }
+
+    /** Active time: gaps between events shorter than 30 seconds, flushed to disk every 5 seconds. */
     private fun trackTime(key: String, now: Long) {
         val prev = lastEvt[key] ?: 0L
         lastEvt[key] = now
-        if (prev != 0L && now - prev < 5000L) timeAcc[key] = (timeAcc[key] ?: 0L) + (now - prev)
+        if (prev != 0L && now - prev < 30000L) timeAcc[key] = (timeAcc[key] ?: 0L) + (now - prev)
         if (now - (lastFlush[key] ?: 0L) >= 5000L) {
             lastFlush[key] = now
             val ms = timeAcc[key] ?: 0L
@@ -185,8 +245,8 @@ class CounterService : AccessibilityService() {
         wh.post {
             try {
                 val d = detect(root, pkg)
-                cache[platform] = Detection(d.first, SystemClock.uptimeMillis())
-                Store.setDebug(this, "$platform -> ${d.first} | " + d.second.joinToString(","))
+                cache[platform] = Detection(d.mode, SystemClock.uptimeMillis(), d.sig)
+                Store.setDebug(this, "$platform -> ${d.mode} | " + d.sample.joinToString(","))
             } catch (_: Exception) {
             } finally {
                 pending.remove(platform)
@@ -194,14 +254,25 @@ class CounterService : AccessibilityService() {
         }
     }
 
-    private fun detect(root: AccessibilityNodeInfo, pkg: String): Pair<String, List<String>> {
+    private fun detect(root: AccessibilityNodeInfo, pkg: String): Det {
         if (pkg == "com.facebook.katana") return detectFacebook(root)
         val ids = LinkedHashSet<String>()
+        val sb = StringBuilder()
         var budget = 300
+        var textBudget = 120
         fun walk(n: AccessibilityNodeInfo?) {
             if (n == null || budget <= 0) return
             budget--
             n.viewIdResourceName?.let { ids.add(it.substringAfter(":id/").lowercase()) }
+            if (textBudget > 0) {
+                val t = n.text
+                val d = n.contentDescription
+                if (t != null || d != null) {
+                    textBudget--
+                    if (t != null) sb.append(t)
+                    if (d != null) sb.append(d)
+                }
+            }
             for (i in 0 until n.childCount) walk(n.getChild(i))
         }
         walk(root)
@@ -215,7 +286,8 @@ class CounterService : AccessibilityService() {
                 s.contains("message") || s.contains("chat") -> "messages"
             else -> "posts"
         }
-        return Pair(mode, ids.take(12))
+        // numbers and clocks are removed so a ticking timer does not look like a new story
+        return Det(mode, ids.take(12), numRe.replace(sb.toString(), "").hashCode())
     }
 
     /**
@@ -223,7 +295,7 @@ class CounterService : AccessibilityService() {
      * Screens without a tab bar are full-screen viewers (stories or reels).
      * Labels are only looked at in memory to decide the mode. Nothing is saved.
      */
-    private fun detectFacebook(root: AccessibilityNodeInfo): Pair<String, List<String>> {
+    private fun detectFacebook(root: AccessibilityNodeInfo): Det {
         var tabBar = false
         var selected: String? = null
         val texts = ArrayList<String>()
@@ -247,25 +319,27 @@ class CounterService : AccessibilityService() {
         walk(root)
         val sel = selected
         val sample = texts.take(8)
+        val sig = numRe.replace(texts.joinToString("|"), "").hashCode()
         if (tabBar) {
             if (sel != null) {
-                return when {
-                    sel.startsWith("home") -> Pair("posts", sample)
-                    sel.startsWith("reels") || sel.startsWith("video") || sel.startsWith("watch") -> Pair("reels", sample)
-                    else -> Pair("none", sample)
+                val m = when {
+                    sel.startsWith("home") -> "posts"
+                    sel.startsWith("reels") || sel.startsWith("video") || sel.startsWith("watch") -> "reels"
+                    else -> "none"
                 }
+                return Det(m, sample, sig)
             }
             val reelsHeader = texts.any { it == "reels" } && texts.any { it.contains("follow") }
-            return if (reelsHeader) Pair("reels", sample) else Pair("posts", sample)
+            return Det(if (reelsHeader) "reels" else "posts", sample, sig)
         }
         val storyCue = texts.any {
             it.contains("reply") || it.contains("viewers") || it.contains("seen by") ||
                 it.contains("send message") || it.contains("add new") || it.contains("story")
         }
-        if (storyCue) return Pair("stories", sample)
+        if (storyCue) return Det("stories", sample, sig)
         val reelCue = texts.any { it.contains("follow") || it.contains("reel") }
-        if (reelCue) return Pair("reels", sample)
-        return Pair("none", sample)
+        if (reelCue) return Det("reels", sample, sig)
+        return Det("none", sample, sig)
     }
 
     private fun afterCount(platform: String, type: String, n: Int) {
@@ -405,5 +479,65 @@ class CounterService : AccessibilityService() {
         } catch (_: Exception) {
         }
         popup = null
+    }
+
+    // ---------- mindful pause ----------
+    private fun maybeGate(pkg: String, now: Long) {
+        if (!Store.flag(this, "gate", false)) return
+        if (gate != null) return
+        val away = now - (lastSeen[pkg] ?: 0L) > 30000L
+        if (!away || now < (passUntil[pkg] ?: 0L)) return
+        showGate(pkg)
+    }
+
+    private fun showGate(pkg: String) {
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val name = Labels.appLabel(this, pkg)
+        val view = buildGateView(
+            this, name,
+            {
+                Store.inc(this, "gate", "no")
+                closeGate()
+                Sfx.play(this, R.raw.chime, 0.8f)
+                performGlobalAction(GLOBAL_ACTION_HOME)
+            },
+            {
+                passUntil[pkg] = SystemClock.uptimeMillis() + 15 * 60 * 1000L
+                closeGate()
+            }
+        )
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        )
+        try {
+            wm.addView(view, lp)
+        } catch (_: Exception) {
+            return
+        }
+        gate = view
+        view.alpha = 0f
+        view.animate().alpha(1f).setStartDelay(0).setDuration(250).start()
+        Sfx.play(this, R.raw.pop)
+        handler.removeCallbacks(gateTimeout)
+        handler.postDelayed(gateTimeout, 60000)
+    }
+
+    private fun closeGate() {
+        handler.removeCallbacks(gateTimeout)
+        val v = gate ?: return
+        v.animate().alpha(0f).setStartDelay(0).setDuration(200).withEndAction { removeGate() }.start()
+    }
+
+    private fun removeGate() {
+        val v = gate ?: return
+        try {
+            (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(v)
+        } catch (_: Exception) {
+        }
+        gate = null
     }
 }

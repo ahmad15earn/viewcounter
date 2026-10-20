@@ -22,6 +22,7 @@ import android.view.animation.BounceInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.animation.LinearInterpolator
 import android.view.animation.OvershootInterpolator
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -730,4 +731,86 @@ class BrandView(context: Context, private val key: String) : View(context) {
             }
         }
     }
+}
+
+/**
+ * Mindful pause: three calm seconds, then a question. "No" is the big button on top, "Yes" is small below.
+ */
+fun buildGateView(c: Context, appName: String, onNo: () -> Unit, onYes: () -> Unit): FrameLayout {
+    val root = FrameLayout(c)
+    root.setBackgroundColor(0xF5FFFBE3.toInt())
+    val col = LinearLayout(c).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        setPadding(c.dp(32), 0, c.dp(32), 0)
+    }
+    root.addView(col, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+
+    val face = ImageView(c)
+    face.setImageResource(Moods.res(6))
+    col.addView(face, LinearLayout.LayoutParams(c.dp(170), c.dp(170)))
+
+    val title = c.tv("একটু দীর্ঘ নিঃশ্বাস নিন", 26f, 0xFF14121F.toInt(), 2, -0.01f).apply { gravity = Gravity.CENTER }
+    col.addView(title, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        .apply { topMargin = c.dp(20) })
+    val count = c.tv("৩", 64f, 0xFF6C4DFF.toInt(), 2).apply { gravity = Gravity.CENTER }
+    col.addView(count, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+    val question = c.tv("আপনি কি এখনো\n$appName\nচালু করতে চান?", 24f, 0xFF14121F.toInt(), 2).apply {
+        gravity = Gravity.CENTER
+        visibility = View.GONE
+    }
+    col.addView(question, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        .apply { topMargin = c.dp(20) })
+    val no = c.tv("না, এখন খুলব না", 18f, Color.WHITE, 1).apply {
+        gravity = Gravity.CENTER
+        minHeight = c.dp(60)
+        background = c.rounded(0xFF6C4DFF.toInt(), 30)
+        visibility = View.GONE
+    }
+    no.pressable(onClick = onNo)
+    col.addView(no, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        .apply { topMargin = c.dp(28) })
+    val yes = c.tv("হ্যাঁ, খুলব", 15f, 0xFF5A576E.toInt(), 1).apply {
+        gravity = Gravity.CENTER
+        minHeight = c.dp(48)
+        visibility = View.GONE
+    }
+    yes.pressable(onClick = onYes)
+    col.addView(yes, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        .apply { topMargin = c.dp(12) })
+
+    // the face breathes in and out while we count down
+    val breath = ValueAnimator.ofFloat(1f, 1.22f).apply {
+        duration = 1500
+        repeatCount = ValueAnimator.INFINITE
+        repeatMode = ValueAnimator.REVERSE
+        interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+        addUpdateListener {
+            val s = it.animatedValue as Float
+            face.scaleX = s
+            face.scaleY = s
+        }
+    }
+    root.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+        override fun onViewAttachedToWindow(v: View) {
+            breath.start()
+        }
+
+        override fun onViewDetachedFromWindow(v: View) {
+            breath.cancel()
+        }
+    })
+    root.postDelayed({ count.text = "২" }, 1000)
+    root.postDelayed({ count.text = "১" }, 2000)
+    root.postDelayed({
+        title.visibility = View.GONE
+        count.visibility = View.GONE
+        for (v in listOf<View>(question, no, yes)) {
+            v.visibility = View.VISIBLE
+            v.alpha = 0f
+            v.animate().alpha(1f).setStartDelay(0).setDuration(350).start()
+        }
+    }, 3000)
+    return root
 }
