@@ -26,6 +26,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
@@ -812,5 +813,73 @@ fun buildGateView(c: Context, appName: String, onNo: () -> Unit, onYes: () -> Un
             v.animate().alpha(1f).setStartDelay(0).setDuration(350).start()
         }
     }, 3000)
+    return root
+}
+
+
+fun fmtDuration(ms: Long): String {
+    val s = ms / 1000
+    val h = s / 3600
+    val m = (s % 3600) / 60
+    val sec = s % 60
+    return if (h > 0) String.format(Locale.US, "%dh %02dm %02ds", h, m, sec)
+    else if (m > 0) String.format(Locale.US, "%dm %02ds", m, sec)
+    else "${sec}s"
+}
+
+/** Full-screen block: a focus block or the daily hard limit. "Go back" is the big button. */
+fun buildBlockView(
+    c: Context, title: String, sub: String, canSpend: Boolean, cost: Int, points: Int,
+    onHome: () -> Unit, onSpend: () -> Unit
+): FrameLayout {
+    val root = FrameLayout(c)
+    root.setBackgroundColor(0xF8FFE3E8.toInt())
+    val col = LinearLayout(c).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        setPadding(c.dp(32), 0, c.dp(32), 0)
+    }
+    root.addView(col, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+    val face = ImageView(c)
+    face.setImageResource(Moods.res(5))
+    col.addView(face, LinearLayout.LayoutParams(c.dp(170), c.dp(170)))
+    popIn(face)
+    col.addView(
+        c.tv(title, 28f, 0xFF14121F.toInt(), 2, -0.01f).apply { gravity = Gravity.CENTER },
+        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = c.dp(16) }
+    )
+    col.addView(
+        c.tv(sub, 16f, 0xFF5A576E.toInt()).apply { gravity = Gravity.CENTER },
+        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = c.dp(6) }
+    )
+    col.addView(
+        c.tv("তোমার পয়েন্ট: $points", 15f, 0xFF14121F.toInt(), 1).apply { gravity = Gravity.CENTER },
+        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = c.dp(12) }
+    )
+    val home = c.tv("ফিরে যাই", 18f, Color.WHITE, 1).apply {
+        gravity = Gravity.CENTER
+        minHeight = c.dp(60)
+        background = c.rounded(0xFF6C4DFF.toInt(), 30)
+    }
+    home.pressable(onClick = onHome)
+    col.addView(
+        home,
+        LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = c.dp(28) }
+    )
+    if (canSpend) {
+        val ok = points >= cost
+        val spend = c.tv(
+            if (ok) "$cost পয়েন্ট দিয়ে ১০ মিনিট" else "১০ মিনিটের জন্য $cost পয়েন্ট লাগবে",
+            15f, if (ok) 0xFF14121F.toInt() else 0xFF8A879C.toInt(), 1
+        ).apply {
+            gravity = Gravity.CENTER
+            minHeight = c.dp(48)
+        }
+        if (ok) spend.pressable(onClick = onSpend)
+        col.addView(
+            spend,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = c.dp(12) }
+        )
+    }
     return root
 }

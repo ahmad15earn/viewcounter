@@ -27,24 +27,21 @@ class CounterService : AccessibilityService() {
 
     private class Det(val mode: String, val sample: List<String>, val sig: Int)
     private class Detection(val mode: String, val ts: Long, val sig: Int)
+    private class Blk(val kind: String, val title: String, val sub: String, val schedId: String?)
 
     private val lastCount = HashMap<String, Long>()
-    private val lastEvt = HashMap<String, Long>()
     private val lastDetect = HashMap<String, Long>()
     private val lastMode = HashMap<String, String>()
     private val lastSig = HashMap<String, Int>()
+    private val candSig = HashMap<String, Int>()
+    private val seenSigs = HashMap<String, LinkedHashSet<Int>>()
+    private val lastStoryTs = HashMap<String, Long>()
     private val maxIdx = HashMap<String, Int>()
     private val idxTime = HashMap<String, Long>()
     private val timeAcc = HashMap<String, Long>()
     private val lastFlush = HashMap<String, Long>()
-    private val lastSeen = HashMap<String, Long>()
     private val passUntil = HashMap<String, Long>()
-    private val candSig = HashMap<String, Int>()
-    private val seenSigs = HashMap<String, LinkedHashSet<Int>>()
-    private val lastStoryTs = HashMap<String, Long>()
-    private var fg: String? = null
-    private var awayCount = 0
-    private var lastPolled: String? = "?"
+    private var passAllUntil = 0L
     private var lastWidget = 0L
     private val numRe = Regex("[0-9\u09E6-\u09EF:.]+")
 
@@ -56,8 +53,16 @@ class CounterService : AccessibilityService() {
     private var trackedSet: Set<String> = emptySet()
     private var rulesCache: List<Rule>? = null
 
+    private var fg: String? = null
+    private var awayCount = 0
+    private var lastPolled: String? = "?"
+    private var sessionStart = 0L
+    private var lastActiveId: String? = null
+    private var activeDate = ""
+
     private var popup: View? = null
     private var gate: View? = null
+    private var block: View? = null
     private var pill: LinearLayout? = null
     private var pillText: TextView? = null
     private var pillImg: ImageView? = null
@@ -72,6 +77,10 @@ class CounterService : AccessibilityService() {
         pill?.animate()?.alpha(0f)?.setStartDelay(0)?.setDuration(250)?.withEndAction { removePill() }?.start()
     }
     private val gateTimeout = Runnable { closeGate() }
+    private val blockTimeout = Runnable {
+        closeBlock()
+        performGlobalAction(GLOBAL_ACTION_HOME)
+    }
 
     override fun onServiceConnected() {
         Sfx.warm(this)
@@ -94,6 +103,7 @@ class CounterService : AccessibilityService() {
         removePill()
         removePopup()
         removeGate()
+        removeBlock()
         super.onDestroy()
     }
 
@@ -132,18 +142,15 @@ class CounterService : AccessibilityService() {
         if (e == null) return
         val pkg = e.packageName?.toString() ?: return
         if (pkg !in trackedSet) return
+        // nothing is counted while a pause or block is on screen
+        if (gate != null || block != null) return
         val now = SystemClock.uptimeMillis()
-
-        // nothing is counted while the mindful pause is on screen
-        if (gate != null) return
 
         val isScroll = e.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED
         val isContent = e.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
         if (!isScroll && !isContent) return
 
         val platform = Store.PACKAGES[pkg]
-        trackTime(platform ?: "app:$pkg", now)
-
         if (platform == null) {
             // an app you added with the + button: count only forward scrolling
             if (!isScroll) return
@@ -249,17 +256,16 @@ class CounterService : AccessibilityService() {
         return 1
     }
 
-    /** Active time: gaps between events shorter than 30 seconds, flushed to disk every 5 seconds. */
-    private fun trackTime(key: String, now: Long) {
-        val prev = lastEvt[key] ?: 0L
-        lastEvt[key] = now
-        if (prev != 0L && now - prev < 30000L) timeAcc[key] = (timeAcc[key] ?: 0L) + (now - prev)
+    /** Real time in an app: one second added for every second it is in front (screen on, no pause screen). */
+    private fun accrueTime(key: String, ms: Long) {
+        val now = SystemClock.uptimeMillis()
+        timeAcc[key] = (timeAcc[key] ?: 0L) + ms
         if (now - (lastFlush[key] ?: 0L) >= 5000L) {
             lastFlush[key] = now
-            val ms = timeAcc[key] ?: 0L
-            if (ms > 0L) {
+            val total = timeAcc[key] ?: 0L
+            if (total > 0L) {
                 timeAcc[key] = 0L
-                Store.inc(this, key, "time", ms.toInt())
+                Store.inc(this, key, "time", total.toInt())
             }
         }
     }
@@ -393,59 +399,67 @@ class CounterService : AccessibilityService() {
         }
     }
 
-    // ---------- live counter pill ----------
+    // ---------- live pill (count or speed timer) ----------
+    private fun ensurePill(): Boolean {
+        if (pill != null) return true
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(6), dp(16), dp(6))
+        }
+        val img = ImageView(this)
+        row.addView(img, LinearLayout.LayoutParams(dp(30), dp(30)))
+        val t = tv("0", 17f, Color.WHITE, 2)
+        row.addView(t, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+            marginStart = dp(8)
+        })
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = dp(56)
+        }
+        try {
+            wm.addView(row, lp)
+        } catch (_: Exception) {
+            return false
+        }
+        pill = row
+        pillText = t
+        pillImg = img
+        pillColor = 0
+        pillMood = 0
+        return true
+    }
+
+    private fun stylePill(color: Int, mood: Int) {
+        if (color != pillColor) {
+            pillColor = color
+            pill?.background = rounded(color, 24)
+        }
+        if (mood != pillMood) {
+            pillMood = mood
+            pillImg?.setImageResource(Moods.res(mood))
+        }
+    }
+
     private fun showPill(n: Int) {
         if (!Store.flag(this, "pill")) return
+        if (Store.pillMode(this) != "count") return
         val limit = Store.getLimit(this)
         val ratio = if (limit > 0) n.toFloat() / limit else 0f
-        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        if (pill == null) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(8), dp(6), dp(16), dp(6))
-            }
-            val img = ImageView(this)
-            row.addView(img, LinearLayout.LayoutParams(dp(30), dp(30)))
-            val t = tv("0", 17f, Color.WHITE, 2)
-            row.addView(t, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                marginStart = dp(8)
-            })
-            val lp = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-                y = dp(56)
-            }
-            try {
-                wm.addView(row, lp)
-            } catch (_: Exception) {
-                return
-            }
-            pill = row
-            pillText = t
-            pillImg = img
-            pillColor = 0
-            pillMood = 0
-        }
+        if (!ensurePill()) return
         val color = when {
             ratio >= 1f -> 0xF0D64545.toInt()
             ratio >= 0.8f -> 0xF0E67E22.toInt()
             else -> 0xF014121F.toInt()
         }
-        if (color != pillColor) {
-            pillColor = color
-            pill?.background = rounded(color, 24)
-        }
-        val mood = Moods.forRatio(ratio)
-        if (mood != pillMood) {
-            pillMood = mood
-            pillImg?.setImageResource(Moods.res(mood))
-        }
+        stylePill(color, Moods.forRatio(ratio))
         pillText?.text = n.toString()
         pill?.animate()?.cancel()
         pill?.alpha = 1f
@@ -455,6 +469,29 @@ class CounterService : AccessibilityService() {
             ?.setInterpolator(OvershootInterpolator(2f))?.start()
         handler.removeCallbacks(hidePill)
         handler.postDelayed(hidePill, 2600)
+    }
+
+    /** Speed timer mode: a stopwatch for this visit that keeps running while you are in the app. */
+    private fun updateTimerPill() {
+        if (!Store.flag(this, "pill") || Store.pillMode(this) != "timer") return
+        if (!ensurePill()) return
+        val ms = SystemClock.uptimeMillis() - sessionStart
+        val mins = (ms / 60000L).toInt()
+        val color = when {
+            mins >= 60 -> 0xF0D64545.toInt()
+            mins >= 30 -> 0xF0E67E22.toInt()
+            else -> 0xF014121F.toInt()
+        }
+        val mood = when {
+            mins < 10 -> 4
+            mins < 30 -> 6
+            mins < 60 -> 3
+            else -> 1
+        }
+        stylePill(color, mood)
+        pillText?.text = fmtDuration(ms)
+        handler.removeCallbacks(hidePill)
+        pill?.alpha = 1f
     }
 
     private fun removePill() {
@@ -512,7 +549,7 @@ class CounterService : AccessibilityService() {
         popup = null
     }
 
-    // ---------- mindful pause ----------
+    // ---------- which app is in front ----------
     private val ignoreWindows = setOf(
         "com.android.systemui", "com.samsung.android.app.cocktailbarservice",
         "com.samsung.android.honeyboard", "com.google.android.inputmethod.latin", "com.sec.android.inputmethod"
@@ -534,6 +571,7 @@ class CounterService : AccessibilityService() {
         if (!pm.isInteractive) {
             fg = null
             awayCount = 3
+            if (Store.pillMode(this) == "timer") removePill()
             return
         }
         val p = rootInActiveWindow?.packageName?.toString()
@@ -552,15 +590,134 @@ class CounterService : AccessibilityService() {
             // away only after 3 seconds, so the notification shade or a keyboard does not count as leaving
             if (awayCount >= 3) fg = null
         }
+
+        checkSchedules()
+
+        // from here on only while a tracked app is really in front (not while we are going home)
+        if (p == null || !trackedSet.contains(p)) {
+            if (Store.pillMode(this) == "timer") removePill()
+            return
+        }
+        val cur: String = p
+        if (gate != null || block != null) return
+        if (blockFor() != null) {
+            showBlock()
+            return
+        }
+        accrueTime(Store.PACKAGES[cur] ?: "app:$cur", 1000L)
+        updateTimerPill()
     }
 
     private fun onOpened(pkg: String) {
+        Store.inc(this, "gate", "attempt")
+        sessionStart = SystemClock.uptimeMillis()
+        if (gate != null || block != null) return
+        if (blockFor() != null) {
+            Store.inc(this, "gate", "blocked")
+            showBlock()
+            return
+        }
         if (!Store.flag(this, "gate", false)) return
-        if (gate != null) return
         if (SystemClock.uptimeMillis() < (passUntil[pkg] ?: 0L)) return
         showGate(pkg)
     }
 
+    // ---------- focus schedule, points, hard limit ----------
+    private fun blockFor(): Blk? {
+        val now = SystemClock.uptimeMillis()
+        val sched = Store.activeBlock(this)
+        if (sched != null && now >= passAllUntil) {
+            return Blk("schedule", sched.name, "${Store.fmtTime(sched.end)} পর্যন্ত অ্যাপ বন্ধ", sched.id)
+        }
+        if (Store.flag(this, "limit_on", true) && Store.sumToday(this, "*", "*") >= Store.hardLimit(this)) {
+            return Blk("limit", "আজকের সীমা শেষ", "আগামীকাল আবার চেষ্টা করো", null)
+        }
+        return null
+    }
+
+    private fun checkSchedules() {
+        val active = Store.activeBlock(this)
+        val id = active?.id
+        if (id == lastActiveId) return
+        val prev = lastActiveId
+        if (prev != null) finishBlock(prev)
+        lastActiveId = id
+        if (active != null) {
+            activeDate = Store.day()
+            Notifier.post(
+                this, active.id.hashCode(), active.name,
+                "এখন ফোকাস সময়। ${Store.fmtTime(active.end)} পর্যন্ত অ্যাপ বন্ধ থাকবে।", 6
+            )
+        }
+    }
+
+    private fun finishBlock(id: String) {
+        val s = Store.schedules(this).firstOrNull { it.id == id } ?: return
+        if (Store.passUsed(this, activeDate, id) || Store.awarded(this, activeDate, id)) return
+        Store.markAwarded(this, activeDate, id)
+        Store.addPoints(this, 20)
+        Notifier.post(this, id.hashCode() + 7, s.name, "ফোকাস ব্লক শেষ! +২০ পয়েন্ট পেলে।", 4)
+    }
+
+    private fun showBlock() {
+        if (block != null) return
+        removeGate()
+        val b = blockFor() ?: return
+        val cost = 30
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        val view = buildBlockView(
+            this, b.title, b.sub, b.kind == "schedule", cost, Store.points(this),
+            {
+                closeBlock()
+                performGlobalAction(GLOBAL_ACTION_HOME)
+            },
+            {
+                if (Store.spendPoints(this, cost)) {
+                    passAllUntil = SystemClock.uptimeMillis() + 10 * 60 * 1000L
+                    val sid = b.schedId
+                    if (sid != null) Store.markPassUsed(this, activeDate.ifEmpty { Store.day() }, sid)
+                    sessionStart = SystemClock.uptimeMillis()
+                    closeBlock()
+                }
+            }
+        )
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        )
+        try {
+            wm.addView(view, lp)
+        } catch (_: Exception) {
+            return
+        }
+        block = view
+        removePill()
+        view.alpha = 0f
+        view.animate().alpha(1f).setStartDelay(0).setDuration(250).start()
+        Sfx.play(this, R.raw.pop)
+        handler.removeCallbacks(blockTimeout)
+        handler.postDelayed(blockTimeout, 12000)
+    }
+
+    private fun closeBlock() {
+        handler.removeCallbacks(blockTimeout)
+        val v = block ?: return
+        v.animate().alpha(0f).setStartDelay(0).setDuration(200).withEndAction { removeBlock() }.start()
+    }
+
+    private fun removeBlock() {
+        val v = block ?: return
+        try {
+            (getSystemService(WINDOW_SERVICE) as WindowManager).removeView(v)
+        } catch (_: Exception) {
+        }
+        block = null
+    }
+
+    // ---------- mindful pause ----------
     private fun showGate(pkg: String) {
         val wm = getSystemService(WINDOW_SERVICE) as WindowManager
         val name = Labels.appLabel(this, pkg)
@@ -568,6 +725,7 @@ class CounterService : AccessibilityService() {
             this, name,
             {
                 Store.inc(this, "gate", "no")
+                Store.addPoints(this, 5)
                 closeGate()
                 Sfx.play(this, R.raw.chime, 0.8f)
                 performGlobalAction(GLOBAL_ACTION_HOME)
@@ -576,6 +734,7 @@ class CounterService : AccessibilityService() {
                 passUntil[pkg] = SystemClock.uptimeMillis() + 90 * 1000L
                 maxIdx.clear()
                 idxTime.clear()
+                sessionStart = SystemClock.uptimeMillis()
                 closeGate()
             }
         )
@@ -592,6 +751,7 @@ class CounterService : AccessibilityService() {
             return
         }
         gate = view
+        removePill()
         view.alpha = 0f
         view.animate().alpha(1f).setStartDelay(0).setDuration(250).start()
         Sfx.play(this, R.raw.pop)

@@ -6,6 +6,7 @@ import android.app.Activity
 import android.appwidget.AppWidgetManager
 import android.app.AlertDialog
 import android.app.Dialog
+import android.app.TimePickerDialog
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -76,6 +77,7 @@ class MainActivity : Activity() {
     private val customRows = HashMap<String, CustomRow>()
     private val platTotals = HashMap<String, TextView>()
     private val tileNums = HashMap<String, TextView>()
+    private val statNums = HashMap<String, TextView>()
     private var heroNumber: TextView? = null
     private var heroSub: TextView? = null
     private var heroMascot: ImageView? = null
@@ -107,6 +109,30 @@ class MainActivity : Activity() {
         }
 
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
+
+    private fun platPkgs(key: String): List<String> = when (key) {
+        "instagram" -> listOf("com.instagram.android")
+        "facebook" -> listOf("com.facebook.katana", "com.facebook.orca")
+        "twitter" -> listOf("com.twitter.android")
+        else -> listOf("com.whatsapp")
+    }
+
+    /** The real icon of the installed app. Our drawn badge is only a fallback. */
+    private fun iconFor(pkg: String?, platKey: String?): View {
+        val list = if (pkg != null) listOf(pkg) else platPkgs(platKey ?: "")
+        for (p in list) {
+            try {
+                val iv = ImageView(this)
+                iv.setImageDrawable(packageManager.getApplicationIcon(p))
+                return iv
+            } catch (_: Exception) {
+            }
+        }
+        if (platKey != null) return BrandView(this, platKey)
+        val iv = ImageView(this)
+        iv.setImageResource(R.drawable.ic_stat_eye)
+        return iv
+    }
 
     private fun label(type: String, platform: String) =
         if (platform == "whatsapp" && type == "stories") "Status" else Labels.type(type)
@@ -273,7 +299,7 @@ class MainActivity : Activity() {
             clipChildren = false
             elevation = dpf(10)
         }
-        val defs = listOf("home" to 0, "chat" to 1, "plus" to -1, "grid" to 2, "gear" to 3)
+        val defs = listOf("home" to 0, "chat" to 1, "plus" to -1, "grid" to 2, "clock" to 3, "gear" to 4)
         for ((kind, idx) in defs) {
             val slot = FrameLayout(this).apply { clipChildren = false }
             if (idx >= 0) {
@@ -325,6 +351,7 @@ class MainActivity : Activity() {
             0 -> buildHome()
             1 -> buildMessages()
             2 -> buildApps()
+            3 -> buildFocus()
             else -> buildSettings()
         }
         content.removeAllViews()
@@ -543,6 +570,7 @@ class MainActivity : Activity() {
         customRows.clear()
         platTotals.clear()
         tileNums.clear()
+        statNums.clear()
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -633,7 +661,26 @@ class MainActivity : Activity() {
             t.addView(tv(def.second, 12f, pal.sub, 1))
             tilesRow.addView(t, LinearLayout.LayoutParams(0, WRAP, 1f).apply { if (i > 0) marginStart = dp(8) })
         }
-        add(col, tilesRow, lp(bottom = dp(16)))
+        add(col, tilesRow, lp(bottom = dp(12)))
+
+        // how often you tried to open your apps today
+        val sc = card(pal.pastel(Pastel.LAVENDER))
+        sc.addView(tv("Opening your apps today", 17f, pal.ink, 1))
+        val srow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val statDefs = listOf(
+            Pair("tried", "Tried to open"), Pair("opened", "Opened"),
+            Pair("skipped", "Skipped"), Pair("points", "Points")
+        )
+        for (def in statDefs) {
+            val cell = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val num = tv("0", 24f, pal.ink, 2)
+            statNums[def.first] = num
+            cell.addView(num)
+            cell.addView(tv(def.second, 12f, pal.sub, 1))
+            srow.addView(cell, LinearLayout.LayoutParams(0, WRAP, 1f))
+        }
+        sc.addView(srow, lp(top = dp(12)))
+        add(col, sc, lp(bottom = dp(16)))
 
         // week
         val wk = LinearLayout(this).apply {
@@ -680,7 +727,7 @@ class MainActivity : Activity() {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                 }
-                head.addView(BrandView(this, p.key), LinearLayout.LayoutParams(dp(44), dp(44)))
+                head.addView(iconFor(null, p.key), LinearLayout.LayoutParams(dp(44), dp(44)))
                 head.addView(tv(p.name, 17f, pal.ink, 1), LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) })
                 val pt = tv("0", 22f, pal.ink, 2)
                 platTotals[p.key] = pt
@@ -782,6 +829,12 @@ class MainActivity : Activity() {
             for (p in plats) if (platTotals.containsKey(p.key) && p.types.contains(type)) s += Store.today(this, p.key, type)
             numView.text = s.toString()
         }
+        val tried = Store.today(this, "gate", "attempt")
+        val skippedNow = Store.today(this, "gate", "no") + Store.today(this, "gate", "blocked")
+        statNums["tried"]?.text = tried.toString()
+        statNums["skipped"]?.text = skippedNow.toString()
+        statNums["opened"]?.text = maxOf(0, tried - skippedNow).toString()
+        statNums["points"]?.text = Store.points(this).toString()
         for ((key, cr) in customRows) {
             val n = Store.today(this, key, "scrolls")
             total += n
@@ -1143,7 +1196,7 @@ class MainActivity : Activity() {
             }
             val platKey = Store.PACKAGES[pkg]
             if (platKey != null) {
-                c.addView(BrandView(this, platKey), LinearLayout.LayoutParams(dp(44), dp(44)))
+                c.addView(iconFor(pkg, platKey), LinearLayout.LayoutParams(dp(44), dp(44)))
             } else {
                 val icon = ImageView(this)
                 try {
@@ -1303,6 +1356,236 @@ class MainActivity : Activity() {
         d.show()
     }
 
+    // ---------- FOCUS ----------
+    private fun circleButton(symbol: String, desc: String, onTap: () -> Unit): TextView {
+        val b = tv(symbol, 24f, pal.ink, 1).apply {
+            gravity = Gravity.CENTER
+            contentDescription = desc
+            background = circle(pal.track)
+        }
+        b.pressable(onClick = onTap)
+        return b
+    }
+
+    private fun daysText(days: Int): String {
+        if (days == 127) return "Every day"
+        val names = listOf("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
+        val out = ArrayList<String>()
+        for (i in 0 until 7) if (((days shr i) and 1) == 1) out.add(names[i])
+        return if (out.isEmpty()) "No days" else out.joinToString(" ")
+    }
+
+    private fun buildFocus(): View {
+        val (sv, col) = newScreen()
+        add(col, header("Focus", "Plan your day. Your apps stay closed during your blocks."), lp(top = dp(8), bottom = dp(24)))
+
+        val active = Store.activeBlock(this)
+        if (active != null) {
+            val b = card(pal.pastel(Pastel.PINK))
+            b.addView(tv("Now: ${active.name}", 17f, pal.ink, 1))
+            b.addView(tv("Your apps are closed until ${Store.fmtTime(active.end)}.", 14f, pal.sub), lp(top = dp(4)))
+            add(col, b, lp(bottom = dp(12)))
+        }
+
+        // points
+        val pc = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+            background = rounded(pal.pastel(Pastel.YELLOW), 28)
+        }
+        val pcl = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        pcl.addView(tv("Brain points", 14f, pal.sub, 1))
+        pcl.addView(tv(Store.points(this).toString(), 44f, pal.ink, 2, -0.02f))
+        pc.addView(pcl, LinearLayout.LayoutParams(WRAP, WRAP))
+        pc.addView(
+            tv("Skip an app you wanted to open: +5\nFinish a focus block: +20\n30 points = a 10 minute break from a block", 13f, pal.sub),
+            LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(20) }
+        )
+        add(col, pc, lp(bottom = dp(24)))
+
+        // schedule
+        add(col, tv("Schedule", 22f, pal.ink, 2), lp(bottom = dp(12)))
+        val list = Store.schedules(this)
+        if (list.isEmpty()) {
+            val e = card(pal.pastel(Pastel.LAVENDER))
+            e.addView(tv("No blocks yet", 17f, pal.ink, 1))
+            e.addView(tv("Add one, like: study from 08:00 to 10:00. Your apps stay closed until it ends.", 14f, pal.sub), lp(top = dp(4)))
+            add(col, e, lp(bottom = dp(12)))
+        }
+        list.forEachIndexed { i, s -> add(col, scheduleCard(s, i), lp(bottom = dp(12))) }
+        val addB = primaryButton("+  New schedule")
+        addB.pressable { showScheduleEditor(null) }
+        add(col, addB, lp(top = dp(4), bottom = dp(32)))
+
+        // hard limit
+        add(col, tv("Daily hard limit", 22f, pal.ink, 2), lp(bottom = dp(12)))
+        val hl = card(pal.card)
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val tx = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        tx.addView(tv("Close my apps at the limit", 16f, pal.ink, 1))
+        tx.addView(tv("After this many scrolls your apps stay closed until tomorrow. No pass.", 13f, pal.sub))
+        top.addView(tx, LinearLayout.LayoutParams(0, WRAP, 1f))
+        val tg = ToggleView(this, pal.accent, pal.track)
+        tg.set(Store.flag(this, "limit_on", true), false)
+        tg.onChange = { Store.setFlag(this, "limit_on", it) }
+        top.addView(tg)
+        hl.addView(top)
+        val stepRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        val value = tv("${Store.hardLimit(this)} scrolls", 20f, pal.ink, 2).apply {
+            gravity = Gravity.CENTER
+            minWidth = dp(150)
+        }
+        fun change(delta: Int) {
+            val v = (Store.hardLimit(this) + delta).coerceIn(50, 5000)
+            Store.setHardLimit(this, v)
+            value.text = "$v scrolls"
+        }
+        stepRow.addView(circleButton("−", "Lower limit") { change(-50) }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        stepRow.addView(value)
+        stepRow.addView(circleButton("+", "Raise limit") { change(50) }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        hl.addView(stepRow, lp(top = dp(16)))
+        add(col, hl, lp())
+        return sv
+    }
+
+    private fun scheduleCard(s: Sched, i: Int): LinearLayout {
+        val c = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(20), dp(16), dp(12), dp(16))
+            background = rounded(pal.pastel(Pastel.CYCLE[i % Pastel.CYCLE.size]), 28)
+            alpha = if (s.enabled) 1f else 0.55f
+        }
+        val t = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        t.addView(tv(s.name, 17f, pal.ink, 1))
+        t.addView(tv("${Store.fmtTime(s.start)} – ${Store.fmtTime(s.end)}  ·  ${daysText(s.days)}", 13f, pal.sub))
+        c.addView(t, LinearLayout.LayoutParams(0, WRAP, 1f))
+        val tg = ToggleView(this, pal.accent, pal.track)
+        tg.set(s.enabled, false)
+        tg.onChange = { on ->
+            Store.saveSchedules(this, Store.schedules(this).map {
+                if (it.id == s.id) Sched(it.id, it.name, it.start, it.end, it.days, on) else it
+            })
+            c.animate().alpha(if (on) 1f else 0.55f).setStartDelay(0).setDuration(200).start()
+        }
+        c.addView(tg)
+        c.pressable { showScheduleEditor(s) }
+        return c
+    }
+
+    private fun showScheduleEditor(existing: Sched?) {
+        var start = existing?.start ?: (8 * 60)
+        var end = existing?.end ?: (10 * 60)
+        var days = existing?.days ?: 31
+        sheet { box, close ->
+            box.addView(tv(if (existing == null) "New schedule" else "Edit schedule", 24f, pal.ink, 2, -0.01f), lp(bottom = dp(16)))
+
+            box.addView(sectionLabel("NAME"))
+            val nameEt = EditText(this).apply {
+                setText(existing?.name ?: "")
+                hint = "পড়াশোনা"
+                setHintTextColor(pal.sub)
+                setTextColor(pal.ink)
+                textSize = 18f
+                maxLines = 1
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                background = rounded(pal.track, 16)
+                setPadding(dp(16), 0, dp(16), 0)
+                minHeight = dp(56)
+            }
+            box.addView(nameEt, lp(top = dp(8), bottom = dp(8)))
+            val presets = listOf("পড়াশোনা", "বাইরে যাওয়া", "কাজ", "ঘুম").map { Pair(it, it) }
+            box.addView(chips(presets, "") { nameEt.setText(it) }, lp(bottom = dp(16)))
+
+            box.addView(sectionLabel("TIME"))
+            val timeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val startBtn = secondaryButton("From  ${Store.fmtTime(start)}")
+            val endBtn = secondaryButton("To  ${Store.fmtTime(end)}")
+            startBtn.pressable {
+                TimePickerDialog(this, TimePickerDialog.OnTimeSetListener { _, hh, mm ->
+                    start = hh * 60 + mm
+                    startBtn.text = "From  ${Store.fmtTime(start)}"
+                }, start / 60, start % 60, true).show()
+            }
+            endBtn.pressable {
+                TimePickerDialog(this, TimePickerDialog.OnTimeSetListener { _, hh, mm ->
+                    end = hh * 60 + mm
+                    endBtn.text = "To  ${Store.fmtTime(end)}"
+                }, end / 60, end % 60, true).show()
+            }
+            timeRow.addView(startBtn, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginEnd = dp(8) })
+            timeRow.addView(endBtn, LinearLayout.LayoutParams(0, WRAP, 1f))
+            box.addView(timeRow, lp(top = dp(8), bottom = dp(16)))
+
+            box.addView(sectionLabel("DAYS"))
+            val dayRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val dayNames = listOf("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
+            val dayViews = ArrayList<TextView>()
+            fun paintDays() {
+                for (i in 0 until 7) {
+                    val on = ((days shr i) and 1) == 1
+                    dayViews[i].setTextColor(if (on) Color.WHITE else pal.ink)
+                    dayViews[i].background = rounded(if (on) pal.accent else pal.track, 20)
+                }
+            }
+            for (i in 0 until 7) {
+                val d = tv(dayNames[i], 13f, pal.ink, 1).apply {
+                    gravity = Gravity.CENTER
+                    minHeight = dp(44)
+                }
+                d.pressable {
+                    days = days xor (1 shl i)
+                    paintDays()
+                }
+                dayViews.add(d)
+                dayRow.addView(d, LinearLayout.LayoutParams(0, WRAP, 1f).apply { if (i > 0) marginStart = dp(4) })
+            }
+            paintDays()
+            box.addView(dayRow, lp(top = dp(8), bottom = dp(20)))
+
+            val save = primaryButton("Save")
+            save.pressable {
+                val nm = nameEt.text.toString().trim()
+                if (nm.isEmpty()) {
+                    toast("Give it a name")
+                } else if (start == end) {
+                    toast("Start and end must be different")
+                } else if (days == 0) {
+                    toast("Pick at least one day")
+                } else {
+                    val s = Sched(existing?.id ?: "s" + System.currentTimeMillis(), nm, start, end, days, existing?.enabled ?: true)
+                    val list = Store.schedules(this)
+                    val at = list.indexOfFirst { it.id == s.id }
+                    if (at >= 0) list[at] = s else list.add(s)
+                    Store.saveSchedules(this, list)
+                    close()
+                    showTab(3, false)
+                    Sfx.play(this, R.raw.chime, 0.7f)
+                }
+            }
+            box.addView(save, lp())
+            if (existing != null) {
+                val del = tv("Delete schedule", 15f, pal.red, 1).apply {
+                    gravity = Gravity.CENTER
+                    minHeight = dp(52)
+                }
+                del.pressable {
+                    Store.saveSchedules(this, Store.schedules(this).filter { it.id != existing.id })
+                    close()
+                    showTab(3, false)
+                }
+                box.addView(del, lp(top = dp(4)))
+            }
+        }
+    }
+
     // ---------- SETTINGS ----------
     private fun toggleRow(title: String, sub: String, key: String, def: Boolean = true): LinearLayout {
         val row = LinearLayout(this).apply {
@@ -1401,6 +1684,12 @@ class MainActivity : Activity() {
         prefs.addView(toggleRow("Live counter", "Brain pill over your apps while you scroll", "pill"))
         prefs.addView(toggleRow("Notifications", "Your messages as notifications", "notify"))
         prefs.addView(toggleRow("Mindful pause", "Asks before an app opens. Counting starts after you say yes.", "gate", false))
+        prefs.addView(sectionLabel("LIVE PILL SHOWS"), lp(top = dp(12), bottom = dp(8)))
+        prefs.addView(
+            chips(listOf(Pair("count", "Scroll count"), Pair("timer", "Speed timer")), Store.pillMode(this)) {
+                Store.setPillMode(this, it)
+            }
+        )
         add(col, prefs, lp(bottom = dp(12)))
 
         val test = secondaryButton("Send a test message")
@@ -1448,7 +1737,7 @@ class MainActivity : Activity() {
         add(col, export, lp(top = dp(8)))
         add(col, reset, lp(top = dp(8)))
 
-        val about = tv("View Counter 2.4.0", 13f, pal.sub).apply { gravity = Gravity.CENTER }
+        val about = tv("View Counter 2.5.0", 13f, pal.sub).apply { gravity = Gravity.CENTER }
         val diag = tv("", 11f, pal.sub).apply {
             gravity = Gravity.CENTER
             visibility = View.GONE

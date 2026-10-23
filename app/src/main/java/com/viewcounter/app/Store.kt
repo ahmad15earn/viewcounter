@@ -20,6 +20,16 @@ class Rule(
     val enabled: Boolean
 )
 
+/** A focus block: apps stay closed from [start] to [end] (minutes since midnight) on the chosen [days] (bit 0 = Monday). */
+class Sched(
+    val id: String,
+    val name: String,
+    val start: Int,
+    val end: Int,
+    val days: Int,
+    val enabled: Boolean
+)
+
 object Store {
     val PACKAGES = mapOf(
         "com.instagram.android" to "instagram",
@@ -83,7 +93,7 @@ object Store {
     fun resetAll(c: Context) {
         val e = prefs(c).edit()
         for (k in prefs(c).all.keys) {
-            if (k.startsWith("d|") || k.startsWith("t|") || k.startsWith("f|")) e.remove(k)
+            if (k.startsWith("d|") || k.startsWith("t|") || k.startsWith("f|") || k.startsWith("pu|") || k.startsWith("aw|")) e.remove(k)
         }
         e.apply()
     }
@@ -233,6 +243,79 @@ object Store {
         }
         prefs(c).edit().putString("rules", a.toString()).apply()
     }
+
+    // ---------- points ----------
+    fun points(c: Context) = prefs(c).getInt("points", 0)
+    fun addPoints(c: Context, n: Int) = prefs(c).edit().putInt("points", maxOf(0, points(c) + n)).apply()
+    fun spendPoints(c: Context, n: Int): Boolean {
+        if (points(c) < n) return false
+        addPoints(c, -n)
+        return true
+    }
+
+    fun hardLimit(c: Context) = prefs(c).getInt("hard_limit", 1000)
+    fun setHardLimit(c: Context, v: Int) = prefs(c).edit().putInt("hard_limit", v).apply()
+
+    fun pillMode(c: Context): String = prefs(c).getString("pill_mode", "count") ?: "count"
+    fun setPillMode(c: Context, m: String) = prefs(c).edit().putString("pill_mode", m).apply()
+
+    // ---------- focus schedule ----------
+    fun fmtTime(min: Int): String = String.format(Locale.US, "%02d:%02d", min / 60, min % 60)
+
+    fun schedules(c: Context): MutableList<Sched> {
+        val raw = prefs(c).getString("sched", null) ?: return mutableListOf()
+        val out = mutableListOf<Sched>()
+        try {
+            val a = JSONArray(raw)
+            for (i in 0 until a.length()) {
+                val o = a.getJSONObject(i)
+                out.add(
+                    Sched(
+                        o.getString("id"), o.getString("name"), o.getInt("start"), o.getInt("end"),
+                        o.getInt("days"), o.optBoolean("enabled", true)
+                    )
+                )
+            }
+        } catch (_: Exception) {
+        }
+        return out
+    }
+
+    fun saveSchedules(c: Context, list: List<Sched>) {
+        val a = JSONArray()
+        for (s in list) {
+            a.put(
+                JSONObject().put("id", s.id).put("name", s.name).put("start", s.start)
+                    .put("end", s.end).put("days", s.days).put("enabled", s.enabled)
+            )
+        }
+        prefs(c).edit().putString("sched", a.toString()).apply()
+    }
+
+    /** The focus block that is running right now, if any. Overnight blocks belong to the day they start on. */
+    fun activeBlock(c: Context): Sched? {
+        val cal = Calendar.getInstance()
+        val nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        val dow = (cal.get(Calendar.DAY_OF_WEEK) + 5) % 7
+        val prev = (dow + 6) % 7
+        for (s in schedules(c)) {
+            if (!s.enabled || s.start == s.end) continue
+            val today = ((s.days shr dow) and 1) == 1
+            val yesterday = ((s.days shr prev) and 1) == 1
+            if (s.start < s.end) {
+                if (today && nowMin >= s.start && nowMin < s.end) return s
+            } else {
+                if (today && nowMin >= s.start) return s
+                if (yesterday && nowMin < s.end) return s
+            }
+        }
+        return null
+    }
+
+    fun passUsed(c: Context, date: String, id: String) = prefs(c).getBoolean("pu|$date|$id", false)
+    fun markPassUsed(c: Context, date: String, id: String) = prefs(c).edit().putBoolean("pu|$date|$id", true).apply()
+    fun awarded(c: Context, date: String, id: String) = prefs(c).getBoolean("aw|$date|$id", false)
+    fun markAwarded(c: Context, date: String, id: String) = prefs(c).edit().putBoolean("aw|$date|$id", true).apply()
 
     fun firedToday(c: Context, id: String) = prefs(c).getBoolean("f|${day()}|$id", false)
     fun markFired(c: Context, id: String) = prefs(c).edit().putBoolean("f|${day()}|$id", true).apply()
